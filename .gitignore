@@ -1,0 +1,22 @@
+# 가상환경
+venv/
+.venv/
+
+# 테스트 결과
+temp/
+.temp/
+
+# 환경 변수
+.env
+
+# 파이썬 캐시 및 임시 파일
+__pycache__/
+*.pyc
+
+# 파이썬 바이너리 빌드
+*.so
+*.pyd
+*.dll
+
+# macOS 임시파일
+.DS_Store

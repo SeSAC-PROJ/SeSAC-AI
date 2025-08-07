@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+python-multipart
+boto3
+sqlalchemy
+psycopg2-binary
+pydantic
+python-dotenv
+python-jose
+moviepy
+pydub
+aiofiles
+Pillow
+opencv-python
+mediapipe

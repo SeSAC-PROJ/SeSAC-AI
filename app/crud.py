@@ -1,0 +1,37 @@
+# DB에서 데이터 CRUD 작업을 수행하는 함수들 모음.
+from app.models import Video, Frame, Audio, Gaze
+from sqlalchemy.orm import Session
+
+# 비디오 생성 (db에 관련 정보 저장)
+def create_video(db, user_id, title, video_totaltime, video_url):
+    db_video = Video(
+        user_id=user_id,
+        title=title,
+        video_totaltime=video_totaltime,
+        video_url=video_url
+    )
+    db.add(db_video)
+    db.commit()
+    db.refresh(db_video)
+    return db_video
+
+def update_video_audio_url(db: Session, video_id: int, video_url: str):
+    video = db.query(Video).filter(Video.id == video_id).one_or_none()
+    if video:
+        video.video_url = video_url
+        db.commit()
+
+def create_frame(db: Session, video_id: int, frame_timestamp: float, image_url: str):
+    db_frame = Frame(video_id=video_id, frame_timestamp=frame_timestamp, image_url=image_url)
+    db.add(db_frame)
+    db.commit()
+
+def create_audio(db: Session, video_id: int, audio_url: str, duration: float):
+    db_audio = Audio(video_id=video_id, audio_url=audio_url, duration=duration)
+    db.add(db_audio)
+    db.commit()
+
+def create_gaze_record(db: Session, frame_id: int, direction: str):
+    gaze_record = Gaze(frame_id=frame_id, direction=direction)
+    db.add(gaze_record)
+    db.commit()
