@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "kseb-ai"
+version = "0.1.0"
+description = "KSEB AI server for video analysis (emotion, gaze)."
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "*"
+uvicorn = {extras = ["standard"], version = "*"}
+python-multipart = "*"
+boto3 = "*"
+sqlalchemy = "*"
+psycopg2-binary = "*"
+pydantic = "*"
+python-dotenv = "*"
+python-jose = "*"
+moviepy = "*"
+pydub = "*"
+aiofiles = "*"
+Pillow = "*"
+opencv-python = "*"
+mediapipe = "*"
+deepface = "*"
+tf-keras = "*"
+openai-whisper = {git = "https://github.com/openai/whisper.git"}
+librosa = "*"
+matplotlib = "*"
+scikit-learn = "*"
+tensorflow = "*"
+pandas = "*"
+numpy = "*"
+tqdm = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
