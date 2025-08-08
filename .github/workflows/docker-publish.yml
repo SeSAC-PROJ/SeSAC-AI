@@ -16,10 +16,13 @@ jobs:
       run: |
         echo "Initial free space:"
         df -h
-        sudo rm -rf /usr/share/dotnet
-        sudo rm -rf /opt/ghc
-        sudo rm -rf "/usr/local/share/boost"
-        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+        # 1) 도커 관련 캐시/이미지/볼륨 모두 삭제
+        docker system prune -af --volumes
+        # 2) GitHub Actions 자체 캐시 및 툴 제거
+        sudo rm -rf /usr/share/dotnet \
+                     /opt/ghc \
+                     "$AGENT_TOOLSDIRECTORY" \
+                     /home/runner/actions-runner/_work/_tool
         echo "Free space after cleanup:"
         df -h
 
