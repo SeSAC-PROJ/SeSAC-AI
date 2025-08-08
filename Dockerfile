@@ -1,36 +1,43 @@
-# --- 1단계: 의존성 빌드 환경 ---
-FROM python:3.10-slim as builder
-
-# 시스템 의존성 설치: git은 git repo에서 직접 설치하는데 필요, cmake는 dlib 등에 필요
-RUN apt-get update && apt-get install -y git cmake && rm -rf /var/lib/apt/lists/*
-
-# Poetry 설치
-RUN pip install poetry
-
-# 작업 디렉토리 설정
+# ──── 1단계: 의존성 설치 ────
+FROM python:3.10-slim AS builder
 WORKDIR /app
 
-# Poetry 프로젝트 파일 복사
-COPY poetry.lock pyproject.toml ./
+# 1) 시스템 빌드 툴 + ffmpeg 포함
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      build-essential \
+      cmake \
+      git \
+      python3-dev \
+      ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
 
-# Poetry를 사용하여 의존성 설치 (개발용 라이브러리 제외)
-RUN poetry install --no-root --only main
+# 2) Poetry 설치 & system site-packages에 설치 설정
+RUN pip install --no-cache-dir poetry \
+ && poetry config virtualenvs.create false
 
+# 3) 프로젝트 파일만 복사 → 의존성 설치 (캐시 활용)
+COPY pyproject.toml poetry.lock ./
+RUN poetry install --no-root --no-interaction --no-ansi
 
-# --- 2단계: 최종 실행 이미지 ---
+# ──── 2단계: 최종 실행 이미지 ────
 FROM python:3.10-slim
-
-# 시스템 의존성 설치: ffmpeg는 비디오/오디오 처리에 필요합니다.
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
-
-# 작업 디렉토리 설정
 WORKDIR /app
 
-# builder 단계에서 설치된 Python 라이브러리들만 복사해옵니다.
-COPY --from=builder /root/.cache/pypoetry/virtualenvs/kseb-ai-*-py3.10/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+# 1) 시스템 런타임 툴만 설치
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ffmpeg \
+ && rm -rf /var/lib/apt/lists/*
 
-# 애플리케이션 소스 코드 복사
+# 2) builder에서 설치된 Python 패키지 복사
+COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+
+# 3) 소스 코드 복사
 COPY app/ ./app
 
-# 애플리케이션 실행
+# 4) 포트 노출
+EXPOSE 8000
+
+# 5) 실행 커맨드
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
