@@ -1,5 +1,5 @@
 # DB에서 데이터 CRUD 작업을 수행하는 함수들 모음.
-from app.models import Video, Frame, Audio, Gaze
+from app.models import Video, Frame, Audio, Gaze, Emotion
 from sqlalchemy.orm import Session
 
 # 비디오 생성 (db에 관련 정보 저장)
@@ -35,3 +35,18 @@ def create_gaze_record(db: Session, frame_id: int, direction: str):
     gaze_record = Gaze(frame_id=frame_id, direction=direction)
     db.add(gaze_record)
     db.commit()
+
+def create_emotion(db: Session, frame_id: int, angry: float, fear: float, surprise: float, happy: float, sad: float, neutral: float):
+    db_emotion = Emotion(
+        frame_id=frame_id,
+        angry=angry,
+        fear=fear,
+        surprise=surprise,
+        happy=happy,
+        sad=sad,
+        neutral=neutral
+    )
+    db.add(db_emotion)
+    db.commit()
+    db.refresh(db_emotion)
+    return db_emotion
