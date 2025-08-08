@@ -19,6 +19,14 @@ from app.speech_pronunciation import run_pronunciation_score  # <- (audio_id, wa
 from app.voice_hz import save_pitch_to_db
 from app.models import Audio, Pronunciation, Pitch
 
+from app.posture_classifier import BASE_DIR, classify_poses_and_save_to_db
+from app.config import (
+    AWS_BUCKET_NAME,
+    AWS_REGION,
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+)
+
 Base.metadata.create_all(bind=engine)
 app = FastAPI()
 
@@ -65,6 +73,22 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
         if audio_obj:
             audio_id = audio_obj.id
 
+            # 포즈 분류 (S3 poses/{video_id}/pose_*.jpg 기반)
+            try:
+                pose_res = classify_poses_and_save_to_db(
+                    db=db,
+                    video_id=video_id,
+                    bucket=AWS_BUCKET_NAME,
+                    region=AWS_REGION,
+                    aws_access_key_id=AWS_ACCESS_KEY_ID,
+                    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+                    model_path=os.path.join(BASE_DIR, "my_pose_classifier2.keras"), 
+                    threshold=0.65,
+                )
+                results["posture"] = pose_res
+            except Exception as e:
+                print(f"[WARN] Posture classification failed: {e}")
+
             # 안전장치: wav_path가 None이면 DB의 audio_url을 사용 (반드시 로컬 경로여야 함)
             if not wav_path:
                 wav_path = audio_obj.audio_url
@@ -78,7 +102,11 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
             # 4) 속도/톤 분석
             save_pitch_to_db(audio_id, wav_path)
 
-            # 5) voice 결과 병합 (None 대비)
+            
+             
+        
+
+            # 7) voice 결과 병합 (None 대비)
             pron_obj = db.query(Pronunciation).filter_by(audio_id=audio_id).first()
             pitch_obj = db.query(Pitch).filter_by(audio_id=audio_id).first()
 
