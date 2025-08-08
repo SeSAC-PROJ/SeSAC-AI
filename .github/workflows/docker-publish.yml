@@ -2,7 +2,7 @@ name: Docker Image CI for KSEB-AI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "feature/voice.mk2" ]
 
 jobs:
   build-and-push:
@@ -24,7 +24,10 @@ jobs:
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
-        context: ./KSEB-AI
-        file: ./KSEB-AI/Dockerfile
+        # context를 현재 디렉토리(.)로 수정합니다.
+        context: .
+        # Dockerfile 경로를 ./Dockerfile로 수정합니다.
+        file: ./Dockerfile
         push: true
-        tags: ${{ secrets.DOCKERHUB_USER }}/kseb-ai:latest
+        # 태그는 yuneu6112/kseb-ai:latest 로 푸시됩니다.
+        tags: yuneu6112/kseb-ai:latest
