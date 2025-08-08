@@ -22,19 +22,19 @@ def get_db_session():
     return SessionLocal()
 
 def process_video_background(video_path, out_dir, video_id, temp_file_name):
-    """Background task용 비디오 처리 함수 - gaze 분석 포함"""
+    """Background task용 비디오 처리 함수 - 전체 분석 엔드포인트 호출"""
     db = get_db_session()
     try:
         print(f"[INFO] Background processing started for video_id: {video_id}")
-        gaze_results = video_processing.extract_frames_and_audio_with_gaze(
+        results = video_processing.analyze_presentation_video(
             video_path=video_path,
             out_dir=out_dir,
             db=db,
             video_id=video_id,
             s3_utils=s3_utils
         )
-        print(f"[INFO] Background processing completed for video_id: {video_id}")
-        print(f"[INFO] Gaze results: {gaze_results}")
+        print(f"[INFO] Video analysis completed for video_id: {video_id}")
+        print(f"[INFO] Analysis results: {results}")
     except Exception as e:
         print(f"[ERROR] Background processing failed for video_id {video_id}: {e}")
         import traceback

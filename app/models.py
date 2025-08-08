@@ -31,3 +31,14 @@ class Gaze(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     frame_id = Column(BigInteger, ForeignKey("frame.id", ondelete="CASCADE"), nullable=False)
     direction = Column(String(10), nullable=False)  # 'up', 'down', etc.
+
+class Emotion(Base):
+    __tablename__ = "emotion"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    frame_id = Column(BigInteger, ForeignKey("frame.id", ondelete="CASCADE"), nullable=False)
+    angry = Column(Float, nullable=False)
+    fear = Column(Float, nullable=False)
+    surprise = Column(Float, nullable=False)
+    happy = Column(Float, nullable=False)
+    sad = Column(Float, nullable=False)
+    neutral = Column(Float, nullable=False)
