@@ -16,9 +16,7 @@ jobs:
       run: |
         echo "Initial free space:"
         df -h
-        # 1) 도커 관련 캐시/이미지/볼륨 모두 삭제
         docker system prune -af --volumes
-        # 2) GitHub Actions 자체 캐시 및 툴 제거
         sudo rm -rf /usr/share/dotnet \
                      /opt/ghc \
                      "$AGENT_TOOLSDIRECTORY" \
@@ -35,10 +33,12 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USER }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Build and push Docker image
+    - name: Build and push Docker image with cache
       uses: docker/build-push-action@v5
       with:
         context: .
         file: ./Dockerfile
         push: true
         tags: yuneu6112/kseb-ai:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
