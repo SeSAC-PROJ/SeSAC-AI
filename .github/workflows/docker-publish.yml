@@ -12,6 +12,17 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    - name: Free up disk space on runner
+      run: |
+        echo "Initial free space:"
+        df -h
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf "/usr/local/share/boost"
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+        echo "Free space after cleanup:"
+        df -h
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
@@ -24,10 +35,7 @@ jobs:
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
-        # context를 현재 디렉토리(.)로 수정합니다.
         context: .
-        # Dockerfile 경로를 ./Dockerfile로 수정합니다.
         file: ./Dockerfile
         push: true
-        # 태그는 yuneu6112/kseb-ai:latest 로 푸시됩니다.
         tags: yuneu6112/kseb-ai:latest
