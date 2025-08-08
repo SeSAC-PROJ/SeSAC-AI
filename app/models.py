@@ -42,3 +42,23 @@ class Emotion(Base):
     happy = Column(Float, nullable=False)
     sad = Column(Float, nullable=False)
     neutral = Column(Float, nullable=False)
+
+
+class Speed(Base):
+    __tablename__ = "speed"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)  # PK
+    audio_id = Column(BigInteger, ForeignKey("audio.id", ondelete="CASCADE"), nullable=False)  # FK -> audio.id
+    stn_start = Column(Float, nullable=False)   # 문장 시작 시간
+    stn_end = Column(Float, nullable=False)     # 문장 끝 시간
+    duration = Column(Float, nullable=False)    # 발화 소요 시간
+    num_words = Column(Integer, nullable=False) # 단어 개수
+    wps = Column(Float, nullable=False)         # 초당 단어 수
+    wpm = Column(Float, nullable=False)         # 분당 단어 수
+    text = Column(Text, nullable=True)          # 문장 텍스트
+
+class Knn(Base):
+    __tablename__ = "knn"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    source = Column(Text, nullable=False)  # 영상 이름
+    mean_wpm = Column(Float, nullable=False)  # 분당 말하는 단어수 평균
+    pitch_std = Column(Float, nullable=False)  # 높낮이 변화의 표준편차
