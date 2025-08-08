@@ -2,7 +2,7 @@
 name = "kseb-ai"
 version = "0.1.0"
 description = "KSEB AI server for video analysis (emotion, gaze)."
-authors = ["Your Name <you@example.com>"]
+authors = ["KSEB Team"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
@@ -24,7 +24,6 @@ opencv-python = "*"
 mediapipe = "*"
 deepface = "*"
 tf-keras = "*"
-openai-whisper = {git = "https://github.com/openai/whisper.git"}
 librosa = "*"
 matplotlib = "*"
 scikit-learn = "*"
@@ -32,6 +31,8 @@ tensorflow = "*"
 pandas = "*"
 numpy = "*"
 tqdm = "*"
+openai-whisper = {git = "https://github.com/openai/whisper.git"}
+
 
 [build-system]
 requires = ["poetry-core"]
