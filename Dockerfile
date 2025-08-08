@@ -24,11 +24,13 @@ RUN poetry install --no-root --no-interaction --no-ansi
 FROM python:3.10-slim
 WORKDIR /app
 
-# 1) 시스템 런타임 툴만 설치
+# 1) 시스템 런타임 툴 + Poetry 설치
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ffmpeg \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir poetry \
+ && poetry config virtualenvs.create false
 
 # 2) builder에서 설치된 Python 패키지 복사
 COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
