@@ -15,8 +15,8 @@ from app import crud, s3_utils, video_processing
 from app.config import JWT_SECRET
 
 # 추가 import
-from app.speech_pronunciation import run_pronunciation_score  # <- (audio_id, wav_path, script_path) 시그니처로 수정 필요
-from app.voice_hz import save_pitch_to_db
+from app.speech_pronunciation import run_pronunciation_score  # (audio_id, wav_path, script_path)
+from app.voice_hz import save_pitch_to_db                     # (audio_id, wav_path)
 from app.models import Audio, Pronunciation, Pitch
 
 from app.posture_classifier import BASE_DIR, classify_poses_and_save_to_db
@@ -58,8 +58,6 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
         print(f"[INFO] Background processing started for video_id: {video_id}")
 
         # 1) 시각/표정 분석 + 오디오 추출(wav_path)
-        # analyze_presentation_video는 내부에서 비디오->오디오 추출 후,
-        # DB(Audio)에 audio_url에 '로컬 wav 경로'를 넣거나, 최소한 반환해줘야 함.
         results, wav_path = video_processing.analyze_presentation_video(
             video_path=video_path,
             out_dir=out_dir,
@@ -67,13 +65,15 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
             video_id=video_id,
             s3_utils=s3_utils
         )
+        if results is None:
+            results = {}
 
         # 2) audio_id 확보
         audio_obj = db.query(Audio).filter(Audio.video_id == video_id).first()
         if audio_obj:
             audio_id = audio_obj.id
 
-            # 포즈 분류 (S3 poses/{video_id}/pose_*.jpg 기반)
+            # posture 분류 (S3 poses/{video_id}/pose_*.jpg 기반)
             try:
                 pose_res = classify_poses_and_save_to_db(
                     db=db,
@@ -82,44 +82,44 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
                     region=AWS_REGION,
                     aws_access_key_id=AWS_ACCESS_KEY_ID,
                     aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-                    model_path=os.path.join(BASE_DIR, "my_pose_classifier2.keras"), 
+                    model_path=os.path.join(BASE_DIR, "my_pose_classifier2.keras"),
                     threshold=0.65,
                 )
                 results["posture"] = pose_res
             except Exception as e:
                 print(f"[WARN] Posture classification failed: {e}")
 
-            # 안전장치: wav_path가 None이면 DB의 audio_url을 사용 (반드시 로컬 경로여야 함)
-            if not wav_path:
-                wav_path = audio_obj.audio_url
-
+            # 로컬 wav_path 필수
             if not wav_path or not os.path.exists(wav_path):
                 raise FileNotFoundError(f"Local wav file not found: {wav_path}")
 
-            # 3) 발음 분석 (로컬 wav 경로 + 스크립트 경로 사용)
-            run_pronunciation_score(audio_id, wav_path, script_path)
+            # 3) 발음 분석
+            try:
+                run_pronunciation_score(audio_id, wav_path, script_path)
+            except Exception as e:
+                print(f"[WARN] Pronunciation scoring failed: {e}")
 
-            # 4) 속도/톤 분석
-            save_pitch_to_db(audio_id, wav_path)
+            # 4) 피치 분석
+            try:
+                save_pitch_to_db(audio_id, wav_path)
+            except Exception as e:
+                print(f"[WARN] Pitch analysis failed: {e}")
 
-            
-             
-        
-
-            # 7) voice 결과 병합 (None 대비)
+            # 5) voice 결과 병합 (speed는 video_processing에서 넣음)
             pron_obj = db.query(Pronunciation).filter_by(audio_id=audio_id).first()
             pitch_obj = db.query(Pitch).filter_by(audio_id=audio_id).first()
 
-            results["voice"] = {
-                "pronunciation": {
-                    "matching_rate": getattr(pron_obj, "matching_rate", None),
-                    "score": getattr(pron_obj, "matching_rate", None)  # 점수 필드가 다르면 수정
-                },
-                "pitch": {
-                    "hz_std": getattr(pitch_obj, "hz_std", None),
-                    "score": getattr(pitch_obj, "pitch_score", None)
-                }
+            voice_block = results.get("voice", {})  # ✅ 기존 speed 유지
+            voice_block["pronunciation"] = {
+                "matching_rate": getattr(pron_obj, "matching_rate", None),
+                "score": getattr(pron_obj, "matching_rate", None)  # 점수 컬럼 다르면 교체
             }
+            voice_block["pitch"] = {
+                "hz_std": getattr(pitch_obj, "hz_std", None),
+                "score": getattr(pitch_obj, "pitch_score", None)
+            }
+            results["voice"] = voice_block
+
         else:
             print("[WARN] Audio object not found in DB. Skipping voice analyses merge.")
 
@@ -132,21 +132,31 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
         traceback.print_exc()
     finally:
         # 세션 종료
-        db.close()
+        try:
+            db.close()
+        except Exception:
+            pass
 
         # 임시 파일/폴더 정리
         try:
             for path in [video_path, script_path, wav_path]:
-                if path and os.path.exists(path):
-                    os.remove(path)
+                try:
+                    if path and os.path.exists(path):
+                        os.remove(path)
+                except Exception:
+                    pass
 
             if os.path.exists(out_dir):
-                for file in os.listdir(out_dir):
-                    try:
-                        os.remove(os.path.join(out_dir, file))
-                    except Exception:
-                        pass
                 try:
+                    for file in os.listdir(out_dir):
+                        fpath = os.path.join(out_dir, file)
+                        try:
+                            if os.path.isfile(fpath):
+                                os.remove(fpath)
+                            elif os.path.isdir(fpath):
+                                shutil.rmtree(fpath, ignore_errors=True)
+                        except Exception:
+                            pass
                     os.rmdir(out_dir)
                 except Exception:
                     pass
@@ -212,7 +222,7 @@ async def upload_video(
         print(f"[ERROR] Failed to extract video duration: {e}")
         video_totaltime = 0
 
-    # 4) 비디오 원본 S3 업로드 (원하면 비동기로 옮겨도 됨)
+    # 4) 비디오 원본 S3 업로드
     s3_key = f"videos/{uuid.uuid4()}/{file.filename}"
     s3_video_url = s3_utils.upload_file_to_s3(temp_file_path, s3_key)
 

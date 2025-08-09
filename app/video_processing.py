@@ -9,9 +9,10 @@ from sqlalchemy.orm import Session
 import cv2
 import mediapipe as mp
 
-from app import crud, speed_analysis
+from app import crud
 from app.config import AWS_BUCKET_NAME, AWS_REGION
-
+from app.models import Audio
+from app.speed_analysis import analyze_and_save_speed  # ✅ 로컬 wav_path 버전 사용
 
 # ---------- MediaPipe 초기화 ----------
 mp_face = mp.solutions.face_detection
@@ -25,7 +26,6 @@ POSE_DETECTOR = mp_pose.Pose(
     enable_segmentation=False,
     min_detection_confidence=0.5
 )
-
 
 # ---------- 포즈(사람) 크롭 ----------
 def _crop_person_rgb_with_mediapipe(frame_rgb: np.ndarray, out_size=(128, 128)) -> Image.Image:
@@ -66,7 +66,6 @@ def _crop_person_rgb_with_mediapipe(frame_rgb: np.ndarray, out_size=(128, 128)) 
     # 실패 시 전체 리사이즈
     return Image.fromarray(frame_rgb).resize(out_size)
 
-
 # ---------- 얼굴(감정) 크롭 ----------
 def extract_face_from_frame(frame: np.ndarray, save_path: str) -> bool:
     """
@@ -88,10 +87,6 @@ def extract_face_from_frame(frame: np.ndarray, save_path: str) -> bool:
                 cv2.imwrite(save_path, face_bgr)
                 return True
     return False
-
-import numpy as np
-from app.models import Audio
-
 
 def extract_frames_and_audio(
     video_path: str, out_dir: str, db: Session, video_id: int, s3_utils
@@ -126,7 +121,7 @@ def extract_frames_and_audio(
             crud.create_frame(db, video_id, t, s3_img_url)
             print(f"[INFO] Frame saved: {s3_img_url}")
 
-            # 2) 감정용 얼굴 크롭 (파일명/키: face_{ms}.jpg 로 통일)
+            # 2) 감정용 얼굴 크롭
             face_save_path = os.path.join(out_dir, f"face_{ms}.jpg")
             if extract_face_from_frame(frame, face_save_path):
                 s3_face_key = f"faces/{video_id}/face_{ms}.jpg"
@@ -220,14 +215,23 @@ def analyze_presentation_video(
         print(f"[ERROR] Emotion analysis failed: {e}")
         import traceback
         traceback.print_exc()
-    
-    #속도 분석
-    audio_obj = db.query(Audio).filter(Audio.video_id == video_id).first()
-    if audio_obj:
-        voice_speed_result = speed_analysis.analyze_and_save_speed(db, audio_obj.id, audio_obj.audio_url, work_dir=out_dir)
-    else:
-        voice_speed_result = {"segments": [], "speed_rows": []}
 
+    # 4) 속도 분석 (이제 로컬 WAV만 사용)
+    voice_speed_result = {"segments": [], "speed_rows": [], "overall_wpm": 0.0, "knn_score": 0.0}
+    try:
+        audio_obj = db.query(Audio).filter(Audio.video_id == video_id).first()
+        if audio_obj:
+            speed_res = analyze_and_save_speed(db, audio_obj.id, wav_path)  # ✅ 로컬 wav_path
+            voice_speed_result = {
+                "segments": speed_res.get("segments", []),
+                "speed_rows": speed_res.get("speed_rows", []),
+                "overall_wpm": speed_res.get("overall_wpm"),
+                "knn_score": speed_res.get("knn_score"),
+            }
+    except Exception as e:
+        print(f"[WARN] Speed analysis failed: {e}")
+
+    # 5) 결과 패키징 (posture는 main에서 추가/병합)
     results: Dict[str, Any] = {
         "gaze": gaze_results,
         "emotion": {
@@ -236,36 +240,11 @@ def analyze_presentation_video(
             "score": (emotion_score_result or {}).get("score"),
             "all_avg": all_emotion_avg
         },
-        "voice": voice_speed_result,
-        "posture": {...}
+        "voice": {
+            "speed": {
+                "overall_wpm": voice_speed_result.get("overall_wpm"),
+                "knn_score": voice_speed_result.get("knn_score"),
+            }
+        }
     }
     return results, wav_path
-
-mp_face = mp.solutions.face_detection
-FACE_DETECTOR = mp_face.FaceDetection(model_selection=1)
-
-def extract_face_from_frame(frame, save_path):
-    """
-    MoviePy 프레임(RGB) 기준: 얼굴 검출 → RGB crop → BGR 변환 후 저장
-    """
-    # frame: MoviePy에서 온 RGB numpy array
-    rgb_frame = frame  # 이미 RGB
-
-    results = FACE_DETECTOR.process(rgb_frame)  # MediaPipe는 RGB 기대
-    if results.detections:
-        for det in results.detections:
-            box = det.location_data.relative_bounding_box
-            h, w, _ = rgb_frame.shape
-            x1 = max(0, int(box.xmin * w))
-            y1 = max(0, int(box.ymin * h))
-            x2 = min(w, x1 + int(box.width * w))
-            y2 = min(h, y1 + int(box.height * h))
-            face_rgb = rgb_frame[y1:y2, x1:x2]
-
-            if face_rgb.shape[0] > 0 and face_rgb.shape[1] > 0:
-                #OpenCV로 저장: RGB -> BGR 변환 필수
-                face_bgr = cv2.cvtColor(face_rgb, cv2.COLOR_RGB2BGR)
-                cv2.imwrite(save_path, face_bgr)
-                return True
-    return False    
-        
