@@ -1,5 +1,6 @@
 # DB에서 데이터 CRUD 작업을 수행하는 함수들 모음.
 from app.models import Video, Frame, Audio, Gaze, Emotion, Speed
+
 from sqlalchemy.orm import Session
 
 # 비디오 생성 (db에 관련 정보 저장)
@@ -67,3 +68,4 @@ def bulk_insert_speed(db: Session, audio_id: int, rows: list[dict]) -> None:
     objs = [Speed(audio_id=audio_id, **r) for r in rows]
     db.bulk_save_objects(objs)
     db.commit()
+

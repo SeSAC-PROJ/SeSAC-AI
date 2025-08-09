@@ -10,6 +10,7 @@ import mediapipe as mp
 import numpy as np
 from app.models import Audio
 
+
 def extract_frames_and_audio(
     video_path, out_dir, db: Session, video_id, s3_utils
 ):
@@ -70,11 +71,12 @@ def analyze_presentation_video(
     4) 발표 속도(voice_speed) 분석 및 DB 저장
     """
     from app import gaze_analysis, emotion_analysis, speed_analysis
+
     from app.config import AWS_BUCKET_NAME, AWS_REGION
 
     #프레임/오디오 추출
     extract_frames_and_audio(video_path, out_dir, db, video_id, s3_utils)
-    
+
     #시선 분석 (프레임 폴더 대상)
     print(f"[INFO] Starting gaze analysis for video_id: {video_id}")
     try:
@@ -155,6 +157,5 @@ def extract_face_from_frame(frame, save_path):
                 #OpenCV로 저장: RGB -> BGR 변환 필수
                 face_bgr = cv2.cvtColor(face_rgb, cv2.COLOR_RGB2BGR)
                 cv2.imwrite(save_path, face_bgr)
-
                 return True
     return False    

@@ -62,3 +62,5 @@ class Knn(Base):
     source = Column(Text, nullable=False)  # 영상 이름
     mean_wpm = Column(Float, nullable=False)  # 분당 말하는 단어수 평균
     pitch_std = Column(Float, nullable=False)  # 높낮이 변화의 표준편차
+
+
