@@ -1,4 +1,3 @@
-# app/video_processing.py
 from moviepy.editor import VideoFileClip
 import os
 from typing import Tuple, Dict, Any
@@ -10,7 +9,7 @@ from sqlalchemy.orm import Session
 import cv2
 import mediapipe as mp
 
-from app import crud
+from app import crud, speed_analysis
 from app.config import AWS_BUCKET_NAME, AWS_REGION
 
 
@@ -89,6 +88,9 @@ def extract_face_from_frame(frame: np.ndarray, save_path: str) -> bool:
                 cv2.imwrite(save_path, face_bgr)
                 return True
     return False
+
+import numpy as np
+from app.models import Audio
 
 
 def extract_frames_and_audio(
@@ -216,6 +218,15 @@ def analyze_presentation_video(
         print(f"[INFO] Emotion analysis completed")
     except Exception as e:
         print(f"[ERROR] Emotion analysis failed: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    #속도 분석
+    audio_obj = db.query(Audio).filter(Audio.video_id == video_id).first()
+    if audio_obj:
+        voice_speed_result = speed_analysis.analyze_and_save_speed(db, audio_obj.id, audio_obj.audio_url, work_dir=out_dir)
+    else:
+        voice_speed_result = {"segments": [], "speed_rows": []}
 
     results: Dict[str, Any] = {
         "gaze": gaze_results,
@@ -225,7 +236,36 @@ def analyze_presentation_video(
             "score": (emotion_score_result or {}).get("score"),
             "all_avg": all_emotion_avg
         },
-        "voice": {},     # 음성 점수/피치 저장은 별도 태스크에서 채워넣기
-        "posture": {}    # 포즈 분류는 별도 posture_classifier.py에서 수행
+        "voice": voice_speed_result,
+        "posture": {...}
     }
     return results, wav_path
+
+mp_face = mp.solutions.face_detection
+FACE_DETECTOR = mp_face.FaceDetection(model_selection=1)
+
+def extract_face_from_frame(frame, save_path):
+    """
+    MoviePy 프레임(RGB) 기준: 얼굴 검출 → RGB crop → BGR 변환 후 저장
+    """
+    # frame: MoviePy에서 온 RGB numpy array
+    rgb_frame = frame  # 이미 RGB
+
+    results = FACE_DETECTOR.process(rgb_frame)  # MediaPipe는 RGB 기대
+    if results.detections:
+        for det in results.detections:
+            box = det.location_data.relative_bounding_box
+            h, w, _ = rgb_frame.shape
+            x1 = max(0, int(box.xmin * w))
+            y1 = max(0, int(box.ymin * h))
+            x2 = min(w, x1 + int(box.width * w))
+            y2 = min(h, y1 + int(box.height * h))
+            face_rgb = rgb_frame[y1:y2, x1:x2]
+
+            if face_rgb.shape[0] > 0 and face_rgb.shape[1] > 0:
+                #OpenCV로 저장: RGB -> BGR 변환 필수
+                face_bgr = cv2.cvtColor(face_rgb, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(save_path, face_bgr)
+                return True
+    return False    
+        
