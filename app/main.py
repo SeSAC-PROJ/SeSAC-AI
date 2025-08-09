@@ -1,3 +1,6 @@
+
+# === main.py (전체 교체본) ===
+
 # ffmpeg PATH를 가장 먼저 등록 (subprocess에서 못 찾는 문제 방지)
 import os
 os.environ["PATH"] += os.pathsep + r"C:\ffmpeg\bin"
@@ -13,9 +16,11 @@ from app import crud, s3_utils, video_processing
 from app.config import JWT_SECRET
 
 # 추가 import
-from app.speech_pronunciation import run_pronunciation_score  # <- (audio_id, wav_path, script_path) 시그니처로 수정 필요
-from app.voice_hz import save_pitch_to_db
+from app.speech_pronunciation import run_pronunciation_score  # (audio_id, wav_path, script_path)
+from app.voice_hz import save_pitch_to_db                     # (audio_id, wav_path)
 from app.models import Audio, Pronunciation, Pitch
+from app.speed_analysis import analyze_and_save_speed
+from app.feedback_chatbot import process_and_feedback
 
 from app.posture_classifier import BASE_DIR, classify_poses_and_save_to_db
 from app.config import (
@@ -25,10 +30,9 @@ from app.config import (
     AWS_SECRET_ACCESS_KEY,
 )
 
-from app.feedback_chatbot import process_and_feedback
-
 Base.metadata.create_all(bind=engine)
 app = FastAPI()
+
 
 # --- DB 세션 유틸 ---
 def get_db():
@@ -38,12 +42,14 @@ def get_db():
     finally:
         db.close()
 
+
 def get_db_session():
     """Background task용 독립적인 DB 세션"""
     return SessionLocal()
 
-# --- 백그라운드 작업
-def process_video_background(video_path, script_path, out_dir, video_id, temp_file_name):
+
+# --- Background 처리 ---
+def process_video_background(video_path: str, script_path: str, out_dir: str, video_id: int, temp_file_name: str):
     """
     Background task용 비디오 처리 함수 - 전체 분석
     analyze_presentation_video가 (results, wav_path)를 반환해야 함.
@@ -53,24 +59,24 @@ def process_video_background(video_path, script_path, out_dir, video_id, temp_fi
     wav_path = None
     try:
         print(f"[INFO] Background processing started for video_id: {video_id}")
+
         # 1) 시각/표정 분석 + 오디오 추출(wav_path)
-        # analyze_presentation_video는 내부에서 비디오->오디오 추출 후,
-        # DB(Audio)에 audio_url에 '로컬 wav 경로'를 넣거나, 최소한 반환해줘야 함.
         results, wav_path = video_processing.analyze_presentation_video(
             video_path=video_path,
-            script_path=script_path,
             out_dir=out_dir,
             db=db,
             video_id=video_id,
             s3_utils=s3_utils
         )
+        if results is None:
+            results = {}
 
-         # 2) audio_id 확보
+        # 2) audio_id 확보
         audio_obj = db.query(Audio).filter(Audio.video_id == video_id).first()
         if audio_obj:
             audio_id = audio_obj.id
 
-            # 포즈 분류 (S3 poses/{video_id}/pose_*.jpg 기반)
+            # posture 분류 (S3 poses/{video_id}/pose_*.jpg 기반)
             try:
                 pose_res = classify_poses_and_save_to_db(
                     db=db,
@@ -86,60 +92,91 @@ def process_video_background(video_path, script_path, out_dir, video_id, temp_fi
             except Exception as e:
                 print(f"[WARN] Posture classification failed: {e}")
 
-            # 안전장치: wav_path가 None이면 DB의 audio_url을 사용 (반드시 로컬 경로여야 함)
-            if not wav_path:
-                wav_path = audio_obj.audio_url
-
+            # 로컬 wav_path 필수
             if not wav_path or not os.path.exists(wav_path):
                 raise FileNotFoundError(f"Local wav file not found: {wav_path}")
 
-            # 3) 발음 분석 (로컬 wav 경로 + 스크립트 경로 사용)
-            run_pronunciation_score(audio_id, wav_path, script_path)
+            # 3) 발음 분석
+            try:
+                run_pronunciation_score(audio_id, wav_path, script_path)
+            except Exception as e:
+                print(f"[WARN] Pronunciation scoring failed: {e}")
 
-            # 4) 속도/톤 분석
-            save_pitch_to_db(audio_id, wav_path)
+            # 4) 피치 분석
+            try:
+                save_pitch_to_db(audio_id, wav_path)
+            except Exception as e:
+                print(f"[WARN] Pitch analysis failed: {e}")
 
-            # 7) voice 결과 병합 (None 대비)
+            # 5) voice 결과 병합 (speed는 video_processing에서 넣음)
             pron_obj = db.query(Pronunciation).filter_by(audio_id=audio_id).first()
             pitch_obj = db.query(Pitch).filter_by(audio_id=audio_id).first()
 
-            results["voice"] = {
-                "pronunciation": {
-                    "matching_rate": getattr(pron_obj, "matching_rate", None),
-                    "score": getattr(pron_obj, "matching_rate", None)  # 점수 필드가 다르면 수정
-                },
-                "pitch": {
-                    "hz_std": getattr(pitch_obj, "hz_std", None),
-                    "score": getattr(pitch_obj, "pitch_score", None)
-                }
+            voice_block = results.get("voice", {})  # ✅ 기존 speed 유지
+            voice_block["pronunciation"] = {
+                "matching_rate": getattr(pron_obj, "matching_rate", None),
+                "score": getattr(pron_obj, "matching_rate", None)  # 점수 컬럼 다르면 교체
             }
+            voice_block["pitch"] = {
+                "hz_std": getattr(pitch_obj, "hz_std", None),
+                "score": getattr(pitch_obj, "pitch_score", None)
+            }
+            results["voice"] = voice_block
+
         else:
             print("[WARN] Audio object not found in DB. Skipping voice analyses merge.")
 
         print(f"[INFO] Video analysis completed for video_id: {video_id}")
         print(f"[INFO] Analysis results: {results}")
 
+        # ✅ 챗봇 피드백 생성
+        try:
+            fb = process_and_feedback(results)
+            print("[INFO] Generated Feedback:", fb)
+            
+            # === DB 저장 부분 추가 ===
+            saved_fb = crud.create_feedback_record(
+                db=db,
+                video_id=video_id,
+                short_feedback=fb.get("short_feedback", ""),
+                detail_feedback=fb.get("detailed_feedback", "")
+            )
+            print(f"[INFO] Feedback saved! ID={saved_fb.id}")
+        
+        except Exception as e:
+            print(f"[ERROR] Failed to generate chatbot feedback: {e}")
+
     except Exception as e:
         print(f"[ERROR] Background processing failed for video_id {video_id}: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        # DB 세션 종료
-        db.close()
+        # 세션 종료
+        try:
+            db.close()
+        except Exception:
+            pass
 
         # 임시 파일/폴더 정리
         try:
             for path in [video_path, script_path, wav_path]:
-                if path and os.path.exists(path):
-                    os.remove(path)
+                try:
+                    if path and os.path.exists(path):
+                        os.remove(path)
+                except Exception:
+                    pass
 
             if os.path.exists(out_dir):
-                for file in os.listdir(out_dir):
-                    try:
-                        os.remove(os.path.join(out_dir, file))
-                    except Exception:
-                        pass
                 try:
+                    for file in os.listdir(out_dir):
+                        fpath = os.path.join(out_dir, file)
+                        try:
+                            if os.path.isfile(fpath):
+                                os.remove(fpath)
+                            elif os.path.isdir(fpath):
+                                shutil.rmtree(fpath, ignore_errors=True)
+                        except Exception:
+                            pass
                     os.rmdir(out_dir)
                 except Exception:
                     pass
@@ -148,7 +185,8 @@ def process_video_background(video_path, script_path, out_dir, video_id, temp_fi
         except Exception as e:
             print(f"[WARNING] Failed to clean up temporary files: {e}")
 
-# 예시 HTML 페이지. 추후 수정 필요.
+
+# --- 샘플 페이지 ---
 @app.get("/", response_class=HTMLResponse)
 async def main_sample_page():
     return """
@@ -158,6 +196,7 @@ async def main_sample_page():
             <h1>AI 발표 피드백 서비스</h1>
             <form action="/videos/upload" method="post" enctype="multipart/form-data">
                 <input type="file" name="file" accept="video/*"><br><br>
+                <input type="file" name="script" accept=".txt"><br><br>
                 <input type="text" name="title" placeholder="제목 입력"><br><br>
                 <input type="submit" value="업로드">
             </form>
@@ -166,7 +205,8 @@ async def main_sample_page():
     </html>
     """
 
-# 비디오 업로드 및 처리 엔드포인트    
+
+# --- 업로드 엔드포인트 ---
 @app.post("/videos/upload")
 async def upload_video(
     background_tasks: BackgroundTasks,
@@ -175,26 +215,26 @@ async def upload_video(
     title: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    # user_id를 기본 값(예: 1)로 임의 설정
-    user_id = 1  # 실제 사용자 인증 로직으로 변경 필요
+    user_id = 1
+
     os.makedirs("temp", exist_ok=True)
 
-    # 비디오 파일 저장 (로컬)
+    # 1) 비디오 파일 저장 (로컬)
     temp_file_name = f"{uuid.uuid4()}_{file.filename}"
     temp_file_path = os.path.join("temp", temp_file_name)
     with open(temp_file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # 스크립트 파일 저장 (로컬)
+    # 2) 스크립트 파일 저장 (로컬)
     script_file_name = f"{uuid.uuid4()}_{script.filename}"
     script_file_path = os.path.join("temp", script_file_name)
     with open(script_file_path, "wb") as buffer:
         shutil.copyfileobj(script.file, buffer)
 
-    # 영상 길이 추출 (moviepy)
+    # 3) 영상 길이 계산
     try:
         clip = VideoFileClip(temp_file_path)
-        video_totaltime = clip.duration
+        video_totaltime = clip.duration or 0
         clip.reader.close()
         if clip.audio:
             clip.audio.reader.close_proc()
@@ -202,9 +242,11 @@ async def upload_video(
         print(f"[ERROR] Failed to extract video duration: {e}")
         video_totaltime = 0
 
-    # S3에 비디오 업로드
+    # 4) 비디오 원본 S3 업로드
     s3_key = f"videos/{uuid.uuid4()}/{file.filename}"
     s3_video_url = s3_utils.upload_file_to_s3(temp_file_path, s3_key)
+
+    # 5) DB 저장
     db_video = crud.create_video(
         db,
         user_id=user_id,
@@ -213,11 +255,11 @@ async def upload_video(
         video_url=s3_video_url
     )
 
-     # 작업 디렉토리 준비
+    # 6) 작업 디렉토리 준비
     out_dir = os.path.join("temp", str(db_video.id))
     os.makedirs(out_dir, exist_ok=True)
 
-    # Background task 실행 (로컬 경로 전달)
+    # 7) Background Task 실행 (로컬 경로 전달)
     background_tasks.add_task(
         process_video_background,
         video_path=temp_file_path,
@@ -233,26 +275,3 @@ async def upload_video(
         "s3_url": s3_video_url,
         "video_totaltime": video_totaltime,
     }
-
-    # # 1) 동기적으로 분석 실행
-    # results, wav_path = video_processing.analyze_presentation_video(
-    #     video_path=temp_file_path,
-    #     script_path=script_file_path,
-    #     out_dir=out_dir,
-    #     db=db,
-    #     video_id=db_video.id,
-    #     s3_utils=s3_utils
-    # )
-
-    # # 2) 즉시 챗봇 피드백 생성
-    # feedback = process_and_feedback(results)
-
-    # # 3) 클라이언트에 분석 결과와 피드백을 동시에 반환
-    # return {
-    #     "message": "Upload success, analysis and feedback complete",
-    #     "video_id": db_video.id,
-    #     "analysis_results": results,
-    #     "feedback": feedback,
-    #     "s3_url": s3_video_url,
-    #     "video_totaltime": video_totaltime,
-    # }

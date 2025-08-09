@@ -1,5 +1,4 @@
-# 이미지 추출 및 오디오 추출 및 db 저장
-# app/video_processing.py
+
 from moviepy.editor import VideoFileClip
 import os
 from typing import Tuple, Dict, Any
@@ -12,9 +11,9 @@ import cv2
 import mediapipe as mp
 
 from app import crud
-from app.models import Audio, Pronunciation, Pitch
-from app.posture_classifier import classify_poses_and_save_to_db
 from app.config import AWS_BUCKET_NAME, AWS_REGION
+from app.models import Audio
+from app.speed_analysis import analyze_and_save_speed  # ✅ 로컬 wav_path 버전 사용
 
 # ---------- MediaPipe 초기화 ----------
 mp_face = mp.solutions.face_detection
@@ -68,7 +67,7 @@ def _crop_person_rgb_with_mediapipe(frame_rgb: np.ndarray, out_size=(128, 128)) 
     # 실패 시 전체 리사이즈
     return Image.fromarray(frame_rgb).resize(out_size)
 
-# ---------- 얼굴(감정) 크롭(기존 유지) ----------
+# ---------- 얼굴(감정) 크롭 ----------
 def extract_face_from_frame(frame: np.ndarray, save_path: str) -> bool:
     """
     MoviePy 프레임(RGB) 기준: 얼굴 검출 → RGB crop → 저장
@@ -91,7 +90,7 @@ def extract_face_from_frame(frame: np.ndarray, save_path: str) -> bool:
     return False
 
 def extract_frames_and_audio(
-    video_path, out_dir, db: Session, video_id, s3_utils
+    video_path: str, out_dir: str, db: Session, video_id: int, s3_utils
 ) -> str:
     """
     - 1초 간격 프레임 추출 → S3(frames/) 업로드 → Frame 저장
@@ -123,14 +122,14 @@ def extract_frames_and_audio(
             crud.create_frame(db, video_id, t, s3_img_url)
             print(f"[INFO] Frame saved: {s3_img_url}")
 
-            # 2) 감정용 얼굴 크롭 (원래 로직)
-            face_save_path = os.path.join(out_dir, f"frames_{ms}.jpg")
+            # 2) 감정용 얼굴 크롭
+            face_save_path = os.path.join(out_dir, f"face_{ms}.jpg")
             if extract_face_from_frame(frame, face_save_path):
-                s3_face_key = f"faces/{video_id}/frames_{ms}.jpg"
+                s3_face_key = f"faces/{video_id}/face_{ms}.jpg"
                 s3_utils.upload_file_to_s3(face_save_path, s3_face_key)
                 print(f"[INFO_FACE] Face crop saved: s3://{AWS_BUCKET_NAME}/{s3_face_key}")
 
-            # 3) 포즈용 사람 크롭 (128x128) – YOLO 제거, MediaPipe Pose 사용
+            # 3) 포즈용 사람 크롭 (128x128)
             pose_img = _crop_person_rgb_with_mediapipe(frame)
             pose_path = os.path.join(out_dir, f"pose_{ms}.jpg")
             pose_img.save(pose_path, quality=95)
@@ -174,7 +173,7 @@ def extract_frames_and_audio(
             pass
 
 def analyze_presentation_video(
-    video_path: str, script_path: str, out_dir: str, db: Session, video_id: int, s3_utils
+    video_path: str, out_dir: str, db: Session, video_id: int, s3_utils
 ) -> Tuple[Dict[str, Any], str]:
     from app import gaze_analysis, emotion_analysis
 
@@ -183,7 +182,7 @@ def analyze_presentation_video(
 
     # 2) 시선 분석
     print(f"[INFO] Starting gaze analysis for video_id: {video_id}")
-    gaze_results = []
+    gaze_results = {}
     try:
         gaze_results = gaze_analysis.analyze_and_save_gaze(
             bucket=AWS_BUCKET_NAME,
@@ -191,6 +190,7 @@ def analyze_presentation_video(
             db=db,
             region=AWS_REGION
         )
+        print(f"[DEBUG] gaze_results 타입: {type(gaze_results)}")
         print(f"[INFO] Gaze analysis completed with {len(gaze_results)} results")
     except Exception as e:
         print(f"[ERROR] Gaze analysis failed: {e}")
@@ -214,16 +214,42 @@ def analyze_presentation_video(
         print(f"[INFO] Emotion analysis completed")
     except Exception as e:
         print(f"[ERROR] Emotion analysis failed: {e}")
+        import traceback
+        traceback.print_exc()
 
+    # 4) 속도 분석 (이제 로컬 WAV만 사용)
+    voice_speed_result = {"segments": [], "speed_rows": [], "overall_wpm": 0.0, "knn_score": 0.0}
+    try:
+        audio_obj = db.query(Audio).filter(Audio.video_id == video_id).first()
+        if audio_obj:
+            speed_res = analyze_and_save_speed(db, audio_obj.id, wav_path)  
+            voice_speed_result = {
+                "segments": speed_res.get("segments", []),
+                "speed_rows": speed_res.get("speed_rows", []),
+                "overall_wpm": speed_res.get("overall_wpm"),
+                "knn_score": speed_res.get("knn_score"),
+            }
+    except Exception as e:
+        print(f"[WARN] Speed analysis failed: {e}")
+
+    # 5) 결과 패키징 (posture는 main에서 추가/병합)
     results: Dict[str, Any] = {
-        "gaze": gaze_results,
+        "gaze": {
+        "gaze_results": {fid: dir for fid, dir in gaze_results.items() if fid != "gaze_score"},
+        "gaze_score": gaze_results.get("gaze_score", 0)
+        },
         "emotion": {
             "avg": (emotion_score_result or {}).get("user"),
             "ref": (emotion_score_result or {}).get("ref"),
             "score": (emotion_score_result or {}).get("score"),
             "all_avg": all_emotion_avg
         },
-        "voice": {},
-        "posture": {}  # ✅ 분류는 별도 posture_classifier.py에서
+        "voice": {
+            "speed": {
+                "speed_rows": voice_speed_result.get("speed_rows", []),
+                "overall_wpm": voice_speed_result.get("overall_wpm"),
+                "knn_score": voice_speed_result.get("knn_score"),
+            }
+        }
     }
     return results, wav_path

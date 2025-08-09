@@ -150,9 +150,9 @@ def detect_gaze_direction_with_mediapipe(image):
             print(f"[DEBUG] Left ratio: {left_ratio:.3f}, Right ratio: {right_ratio:.3f}, Avg: {avg_ratio:.3f}")
             
             # 더 보수적인 임계값으로 시선 방향 결정
-            if avg_ratio < 0.25:      # 0.35 → 0.25로 더 보수적
+            if avg_ratio < 0.45:      # 0.35 → 0.25로 더 보수적
                 return "left"
-            elif avg_ratio > 0.75:    # 0.65 → 0.75로 더 보수적  
+            elif avg_ratio > 0.55:    # 0.65 → 0.75로 더 보수적  
                 return "right"
             else:
                 return "center"
@@ -271,11 +271,17 @@ def analyze_and_save_gaze(bucket: str, prefix: str, db: Session, region: str):
     print(f"[INFO] Face detection rate: {(face_detected_count/len(image_keys)*100):.1f}%")
     print(f"[INFO] Processing success rate: {(processed_count/len(image_keys)*100):.1f}%")
     
-    # 시선 방향 분포 출력
+    # 시선 방향 분포 집계
     direction_stats = {}
     for direction in gaze_results.values():
-        direction_stats[direction] = direction_stats.get(direction, 0) + 1
-    print(f"[INFO] Gaze direction distribution: {direction_stats}")
-    
-    # dictionary 형태로 결과 반환
+        if isinstance(direction, str):
+            direction_stats[direction] = direction_stats.get(direction, 0) + 1
+
+    total_gaze_count = sum(direction_stats.values())
+    center_count = direction_stats.get("center", 0)
+    gaze_score = (center_count / total_gaze_count) * 100 if total_gaze_count > 0 else 0
+    print(f"[INFO] Gaze score (center ratio %): {gaze_score:.2f}")
+
+    gaze_results["gaze_score"] = gaze_score
+
     return gaze_results
