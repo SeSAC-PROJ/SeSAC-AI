@@ -1,4 +1,3 @@
-# 이미지 추출 및 오디오 추출 및 db 저장
 from moviepy.editor import VideoFileClip
 import os
 import uuid
@@ -9,6 +8,8 @@ from sqlalchemy.orm import Session
 import cv2
 import mediapipe as mp
 import numpy as np
+from app.models import Audio
+
 
 def extract_frames_and_audio(
     video_path, out_dir, db: Session, video_id, s3_utils
@@ -67,9 +68,10 @@ def analyze_presentation_video(
     1) 프레임/오디오 추출 및 S3/DB 저장
     2) 시선(gaze) 분석 및 DB 저장
     3) 감정(emotion) 분석 및 DB 저장
-    4) 나머지들 추가
+    4) 발표 속도(voice_speed) 분석 및 DB 저장
     """
-    from app import gaze_analysis, emotion_analysis
+    from app import gaze_analysis, emotion_analysis, speed_analysis
+
     from app.config import AWS_BUCKET_NAME, AWS_REGION
 
     #프레임/오디오 추출
@@ -109,6 +111,13 @@ def analyze_presentation_video(
         print(f"[ERROR] Emotion analysis failed: {e}")
         import traceback
         traceback.print_exc()
+    
+    #속도 분석
+    audio_obj = db.query(Audio).filter(Audio.video_id == video_id).first()
+    if audio_obj:
+        voice_speed_result = speed_analysis.analyze_and_save_speed(db, audio_obj.id, audio_obj.audio_url, work_dir=out_dir)
+    else:
+        voice_speed_result = {"segments": [], "speed_rows": []}
 
     return {
         "gaze": gaze_results,
@@ -118,7 +127,7 @@ def analyze_presentation_video(
             "score": emotion_score_result["score"], # 비교 점수
             "all_avg": all_emotion_avg              # 전체 감정 평균
         },
-        "voice": {...},
+        "voice": voice_speed_result,
         "posture": {...}
     }
     
@@ -145,13 +154,8 @@ def extract_face_from_frame(frame, save_path):
             face_rgb = rgb_frame[y1:y2, x1:x2]
 
             if face_rgb.shape[0] > 0 and face_rgb.shape[1] > 0:
-                # 방법 A) OpenCV로 저장: RGB -> BGR 변환 필수
+                #OpenCV로 저장: RGB -> BGR 변환 필수
                 face_bgr = cv2.cvtColor(face_rgb, cv2.COLOR_RGB2BGR)
                 cv2.imwrite(save_path, face_bgr)
-
-                # 방법 B) PIL로 저장: 변환 없이 바로 저장 (선호)
-                # from PIL import Image
-                # Image.fromarray(face_rgb).save(save_path, quality=95)
-
                 return True
     return False    
