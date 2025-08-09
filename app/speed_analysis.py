@@ -1,32 +1,84 @@
 import os
-from urllib.parse import urlparse
+import sys
+import shutil
 
-import boto3
 import whisper
-from sqlalchemy.orm import Session
-
 import numpy as np
+from sqlalchemy.orm import Session
 from sklearn.neighbors import NearestNeighbors
 
 from app import crud
 from app.models import Knn
-from app.config import AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_BUCKET_NAME, AWS_REGION
 
-model = whisper.load_model("base")
+# speech_pronunciation.py와 동일한 우선순위로 ffmpeg 탐색
+try:
+    from imageio_ffmpeg import get_ffmpeg_exe  # pip install imageio-ffmpeg
+except ImportError:
+    get_ffmpeg_exe = None
 
-def _s3_url_to_key(url: str) -> str:
-    # https://{bucket}.s3.{region}.amazonaws.com/<key>  -> <key>
-    return urlparse(url).path.lstrip("/")
 
-def _download_s3_to_path(audio_url: str, save_path: str):
-    s3 = boto3.client(
-        "s3",
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-        region_name=AWS_REGION,
-    )
-    key = _s3_url_to_key(audio_url)
-    s3.download_file(AWS_BUCKET_NAME, key, save_path)
+def _ensure_ffmpeg_on_path():
+    """
+    ffmpeg 실행파일을 찾고 PATH에 주입.
+    우선순위:
+      1) venv 루트(=sys.prefix)/ffmpeg(.exe)
+      2) venv/Scripts/ffmpeg(.exe) (Windows)
+      3) imageio-ffmpeg 번들
+      4) 이미 PATH에 있는 ffmpeg
+      5) 백업: C:\\ffmpeg\\bin, /usr/bin, /usr/local/bin
+    """
+    venv_root_ffmpeg = os.path.join(sys.prefix, "ffmpeg.exe")
+    venv_root_ffmpeg_nix = os.path.join(sys.prefix, "ffmpeg")
+    venv_scripts_ffmpeg = os.path.join(sys.prefix, "Scripts", "ffmpeg.exe")
+
+    candidates = [
+        venv_root_ffmpeg,
+        venv_root_ffmpeg_nix,
+        venv_scripts_ffmpeg,
+    ]
+
+    if get_ffmpeg_exe is not None:
+        try:
+            bundle = get_ffmpeg_exe()
+            if bundle and os.path.exists(bundle):
+                candidates.append(bundle)
+        except Exception:
+            pass
+
+    path_ffmpeg = shutil.which("ffmpeg")
+    if path_ffmpeg:
+        candidates.append(path_ffmpeg)
+
+    candidates.extend([
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\ffmpeg\bin\ffmpeg",
+        "/usr/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+    ])
+
+    ffmpeg_path = None
+    for c in candidates:
+        if c and os.path.exists(c):
+            ffmpeg_path = c
+            os.environ["PATH"] = os.path.dirname(c) + os.pathsep + os.environ.get("PATH", "")
+            break
+
+    if not ffmpeg_path and not shutil.which("ffmpeg"):
+        raise FileNotFoundError(
+            "ffmpeg executable not found. "
+            "Put ffmpeg in your venv or install 'imageio-ffmpeg', "
+            "or ensure it's on PATH (e.g., C:\\ffmpeg\\bin)."
+        )
+
+
+# Whisper 모델 전역 캐시
+_MODEL = None
+def _get_model():
+    global _MODEL
+    if _MODEL is None:
+        _MODEL = whisper.load_model("base")
+    return _MODEL
+
 
 def build_speed_rows_from_segments(result: dict):
     rows = []
@@ -37,8 +89,8 @@ def build_speed_rows_from_segments(result: dict):
         num_words = len(seg["words"]) if "words" in seg else len(text.split())
         duration = max(end - start, 1e-6)
         wps = num_words / duration
-        
-        # 필터 조건 추가
+
+        # 필터 조건
         if duration <= 0.3:
             continue
         if wps >= 4:
@@ -59,15 +111,16 @@ def build_speed_rows_from_segments(result: dict):
 
 
 def get_knn_model_from_db(db: Session, k=3, alpha=0.05):
-    # DB에서 mean_wpm 리스트 조회
     wpm_records = db.query(Knn.mean_wpm).all()
+    if not wpm_records:
+        # 빈 DB 대비
+        return None, 0.0
+
     wpm_values = [[r[0]] for r in wpm_records]  # 2차원 배열
+    knn = NearestNeighbors(n_neighbors=min(k, len(wpm_values))).fit(wpm_values)
 
-    knn = NearestNeighbors(n_neighbors=k).fit(wpm_values)
-
-    import numpy as np
-    wpm_array = np.array([r[0] for r in wpm_records])
-    scale = np.std(wpm_array) * alpha
+    wpm_array = np.array([r[0] for r in wpm_records], dtype=float)
+    scale = float(np.std(wpm_array)) * alpha
 
     return knn, scale
 
@@ -76,62 +129,64 @@ def calculate_overall_wpm_and_knn_score_db(result, knn, scale):
     all_words = []
     all_start = None
     all_end = None
-    for seg in result['segments']:
+    for seg in result.get('segments', []):
         if all_start is None:
-            all_start = seg['start']
-        all_end = seg['end']
+            all_start = seg.get('start', None)
+        all_end = seg.get('end', all_end)
         if 'words' in seg:
             all_words.extend(seg['words'])
         else:
-            all_words.extend(seg['text'].split())
+            all_words.extend((seg.get('text') or '').split())
 
     total_words = len(all_words)
-    total_duration = all_end - all_start if all_start is not None and all_end is not None else 0
+    total_duration = (all_end - all_start) if (all_start is not None and all_end is not None) else 0.0
 
-    wpm = 0
-    score = 0
+    wpm = 0.0
+    score = 0.0
     if total_duration > 0:
         wps = total_words / total_duration
-        wpm = wps * 60
+        wpm = wps * 60.0
 
-        dist, _ = knn.kneighbors([[wpm]])
-        mean_dist = np.mean(dist)
-        score = 100 * np.exp(-mean_dist / (scale + 1e-6))
+        if knn is not None:
+            dist, _ = knn.kneighbors([[wpm]])
+            mean_dist = float(np.mean(dist))
+            score = float(100 * np.exp(-mean_dist / (scale + 1e-6)))
+        else:
+            score = 0.0
 
     return wpm, score
 
 
-def analyze_and_save_speed(db: Session, audio_id: int, audio_url: str, work_dir: str):
+def analyze_and_save_speed(db: Session, audio_id: int, wav_path: str):
     """
-    S3에서 오디오 다운로드 → Whisper 처리 → speed 저장  
-    → DB 기준 knn으로 전체 WPM 점수 계산 → 결과 반환
+    로컬 WAV 경로를 직접 받아 Whisper로 속도를 분석하고 DB에 저장.
+    (S3 다운로드 없음, 파일 삭제 없음)
     """
-    os.makedirs(work_dir, exist_ok=True)
-    tmp_path = os.path.join(work_dir, "audio.wav")
-    _download_s3_to_path(audio_url, tmp_path)
+    # ✅ FFmpeg PATH 보정
+    _ensure_ffmpeg_on_path()
+
+    if not wav_path or not os.path.exists(wav_path):
+        raise FileNotFoundError(f"Local wav not found: {wav_path}")
 
     knn, scale = get_knn_model_from_db(db)
+    model = _get_model()
 
-    try:
-        result = model.transcribe(
-            tmp_path,
-            word_timestamps=True,
-            language="ko",
-        )
-        speed_rows = build_speed_rows_from_segments(result)
+    # Whisper에 로컬 파일 경로 전달
+    result = model.transcribe(
+        wav_path,
+        word_timestamps=True,
+        language="ko",
+    )
+
+    speed_rows = build_speed_rows_from_segments(result)
+    if speed_rows:
         crud.bulk_insert_speed(db, audio_id, speed_rows)
 
-        wpm, knn_score = calculate_overall_wpm_and_knn_score_db(result, knn, scale)
+    wpm, knn_score = calculate_overall_wpm_and_knn_score_db(result, knn, scale)
 
-        return {
-            "segments": result.get("segments", []),
-            "speed_rows": speed_rows,
-            "overall_wpm": wpm,
-            "knn_score": knn_score,
-        }
-    finally:
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except OSError:
-            pass
+    return {
+        "segments": result.get("segments", []),
+        "speed_rows": speed_rows,
+        "overall_wpm": wpm,
+        "knn_score": knn_score,
+    }
