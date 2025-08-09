@@ -15,6 +15,7 @@ def create_video(db, user_id, title, video_totaltime, video_url):
     db.refresh(db_video)
     return db_video
 
+# 비디오 오디오 URL 업데이트
 def update_video_audio_url(db: Session, video_id: int, video_url: str):
     video = db.query(Video).filter(Video.id == video_id).one_or_none()
     if video:
@@ -30,6 +31,8 @@ def create_audio(db: Session, video_id: int, audio_url: str, duration: float):
     db_audio = Audio(video_id=video_id, audio_url=audio_url, duration=duration)
     db.add(db_audio)
     db.commit()
+    db.refresh(db_audio)
+    return db_audio  # ← id 반환 시 필요
 
 def create_gaze_record(db: Session, frame_id: int, direction: str):
     gaze_record = Gaze(frame_id=frame_id, direction=direction)
@@ -50,3 +53,11 @@ def create_emotion(db: Session, frame_id: int, angry: float, fear: float, surpri
     db.commit()
     db.refresh(db_emotion)
     return db_emotion
+
+def bulk_insert_speed(db: Session, audio_id: int, rows: list[dict]) -> None:
+    """
+    rows: [{'stn_start':..., 'stn_end':..., 'duration':..., 'num_words':..., 'wps':..., 'wpm':..., 'text':...}, ...]
+    """
+    objs = [Speed(audio_id=audio_id, **r) for r in rows]
+    db.bulk_save_objects(objs)
+    db.commit()
