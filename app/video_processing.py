@@ -68,7 +68,7 @@ def _crop_person_rgb_with_mediapipe(frame_rgb: np.ndarray, out_size=(128, 128)) 
     return Image.fromarray(frame_rgb).resize(out_size)
 
 
-# ---------- 얼굴(감정) 크롭(기존 유지) ----------
+# ---------- 얼굴(감정) 크롭 ----------
 def extract_face_from_frame(frame: np.ndarray, save_path: str) -> bool:
     """
     MoviePy 프레임(RGB) 기준: 얼굴 검출 → RGB crop → 저장
@@ -124,14 +124,14 @@ def extract_frames_and_audio(
             crud.create_frame(db, video_id, t, s3_img_url)
             print(f"[INFO] Frame saved: {s3_img_url}")
 
-            # 2) 감정용 얼굴 크롭 (원래 로직)
-            face_save_path = os.path.join(out_dir, f"frames_{ms}.jpg")
+            # 2) 감정용 얼굴 크롭 (파일명/키: face_{ms}.jpg 로 통일)
+            face_save_path = os.path.join(out_dir, f"face_{ms}.jpg")
             if extract_face_from_frame(frame, face_save_path):
-                s3_face_key = f"faces/{video_id}/frames_{ms}.jpg"
+                s3_face_key = f"faces/{video_id}/face_{ms}.jpg"
                 s3_utils.upload_file_to_s3(face_save_path, s3_face_key)
                 print(f"[INFO_FACE] Face crop saved: s3://{AWS_BUCKET_NAME}/{s3_face_key}")
 
-            # 3) 포즈용 사람 크롭 (128x128) – YOLO 제거, MediaPipe Pose 사용
+            # 3) 포즈용 사람 크롭 (128x128)
             pose_img = _crop_person_rgb_with_mediapipe(frame)
             pose_path = os.path.join(out_dir, f"pose_{ms}.jpg")
             pose_img.save(pose_path, quality=95)
@@ -225,7 +225,7 @@ def analyze_presentation_video(
             "score": (emotion_score_result or {}).get("score"),
             "all_avg": all_emotion_avg
         },
-        "voice": {},
-        "posture": {}  # ✅ 분류는 별도 posture_classifier.py에서
+        "voice": {},     # 음성 점수/피치 저장은 별도 태스크에서 채워넣기
+        "posture": {}    # 포즈 분류는 별도 posture_classifier.py에서 수행
     }
     return results, wav_path
