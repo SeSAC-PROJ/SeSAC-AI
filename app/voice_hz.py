@@ -1,15 +1,18 @@
+# === app/voice_hz.py (전체 교체본) ===
 import numpy as np
 import librosa
 from sklearn.neighbors import NearestNeighbors
 from sqlalchemy.orm import Session
 from app.db import SessionLocal
 from app.models import Pitch, Knn
-
+from app import crud  # ✅ crud 사용
 
 def load_knn_model():
     db: Session = SessionLocal()
-    pitch_std_list = [row[0] for row in db.query(Knn.pitch_std).all()]
-    db.close()
+    try:
+        pitch_std_list = [row[0] for row in db.query(Knn.pitch_std).all()]
+    finally:
+        db.close()
     if len(pitch_std_list) == 0:
         return None, None
     pitch_std_array = np.array(pitch_std_list, dtype=float).reshape(-1, 1)
@@ -54,7 +57,6 @@ def analyze_pitch(wav_path: str, knn_model, pitch_std_array):
     f0_half = _aggregate_f0_to_halfsec(f0, sr, base_hop, agg_sec=0.5)
 
     hz_values = f0_half[~np.isnan(f0_half)]
-    hz_values_list = hz_values.tolist()
     hz_std = float(np.nanstd(hz_values)) if len(hz_values) > 0 else 0.0
 
     if knn_model is None or pitch_std_array is None or len(pitch_std_array) == 0:
@@ -76,25 +78,27 @@ def save_pitch_to_db(audio_id: int, wav_path: str):
     knn_model, pitch_std_array = load_knn_model()
     hz_array, hz_std, pitch_score = analyze_pitch(wav_path, knn_model, pitch_std_array)
 
+    # 벌크로 모아서 crud로 저장
+    items = []
+    for idx, hz_val in enumerate(hz_array):
+        # 주석대로 0.5, 1.0, 1.5 ... 의 중앙시간을 원하면 아래처럼:
+        t_sec = (idx + 1) * 0.5
+
+        hz_clean = None if np.isnan(hz_val) else float(hz_val)
+        items.append({
+            "audio_id": audio_id,
+            "hz": hz_clean,
+            "time": t_sec,
+            "hz_std": hz_std,
+            "proper_csv": 0.0,
+            "pitch_score": pitch_score,
+        })
+
     db: Session = SessionLocal()
     try:
-        # 0.5초 간격으로 하나씩 INSERT
-        for idx, hz_val in enumerate(hz_array):
-            t_sec = (idx + 0.5) * 0.5  # 중앙 시간 (0.5, 1.0, 1.5 ...)
-
-            # NaN이면 None → DB에서 NULL
-            hz_clean = None if np.isnan(hz_val) else float(hz_val)
-
-            db.add(Pitch(
-                audio_id=audio_id,
-                hz=hz_clean,
-                time=t_sec,
-                hz_std=hz_std,
-                proper_csv=0.0,
-                pitch_score=pitch_score
-            ))
-
-        db.commit()
+        if items:
+            crud.bulk_insert_pitch(db, items)  # 커밋은 crud 내부에서 하지 않음
+            db.commit()  # 한 번에 커밋
         print(f"[INFO] Pitch 저장 완료: audio_id={audio_id}, 총 {len(hz_array)}개 구간, "
               f"hz_std={hz_std:.3f}, score={pitch_score:.1f}")
     finally:
