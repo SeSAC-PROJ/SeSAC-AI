@@ -1,6 +1,11 @@
+
 # 가상환경
 venv/
 .venv/
+
+# 테스트 결과
+temp/
+.temp/
 
 # 환경 변수
 .env

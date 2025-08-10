@@ -7,7 +7,14 @@ psycopg2-binary
 pydantic
 python-dotenv
 python-jose
-moviepy
+moviepy 
 pydub
 aiofiles
 Pillow
+opencv-python #4.10.0.84버전으로 다운해야함.
+mediapipe #1.26.4 버전 필요. 그래야 deepface가 다운로드 됨.
+deepface
+tf-keras
+librosa
+openai-whisper
+scikit-learn 
