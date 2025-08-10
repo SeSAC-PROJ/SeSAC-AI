@@ -1,5 +1,4 @@
 # === app/speech_pronunciation.py (전체 교체본) ===
-
 import os
 import re
 import sys
@@ -20,12 +19,6 @@ except ImportError:
 def _ensure_ffmpeg_on_path():
     """
     ffmpeg 실행파일을 찾고 PATH에 주입.
-    우선순위:
-      1) venv 루트(=sys.prefix)/ffmpeg(.exe)
-      2) venv/Scripts/ffmpeg(.exe) (Windows)
-      3) imageio-ffmpeg 번들
-      4) 이미 PATH에 있는 ffmpeg
-      5) 백업: C:\\ffmpeg\\bin
     """
     venv_root_ffmpeg = os.path.join(sys.prefix, "ffmpeg.exe")
     venv_root_ffmpeg_nix = os.path.join(sys.prefix, "ffmpeg")
@@ -201,14 +194,7 @@ def get_or_create_script_text_from_file(db: Session, audio_id: int, script_path:
 # ------------------ 메인 엔트리: 발음 점수 ------------------
 def run_pronunciation_score(audio_id: int, wav_path: str, script_file_path: str, model_size: str = "base"):
     """
-    입력:
-      - audio_id: audio 테이블 id
-      - wav_path: 로컬 WAV 파일 경로 (필수)
-      - script_file_path: 대본 txt 로컬 경로 (필수)
-    동작:
-      - ffmpeg PATH 보정
-      - Whisper STT(ko) → 대본과 정렬 → 점수 산출
-      - Pronunciation 업데이트, Score는 video_id 기준으로 저장
+    ffmpeg PATH 보정 -> Whisper -> 정렬/점수 -> Pronunciation/Score 저장
     """
     db: Session = SessionLocal()
     try:
@@ -228,10 +214,10 @@ def run_pronunciation_score(audio_id: int, wav_path: str, script_file_path: str,
         print("DEBUG | wav_path:", abs_audio, "exists:", os.path.exists(abs_audio))
         print("DEBUG | ffmpeg which:", shutil.which("ffmpeg"))
 
-        # 스크립트 저장/업데이트
-        script_text, _ = get_or_create_script_text_from_file(db, audio_id, script_file_path)
+        # 스크립트 저장/업데이트 (이 시점에 Pronunciation 레코드 보장)
+        script_text, pron_obj = get_or_create_script_text_from_file(db, audio_id, script_file_path)
 
-        # 확장자 보정 (가능하면 이미 .wav로 넘겨주세요)
+        # 확장자 보정
         audio_path = abs_audio
         ext = os.path.splitext(audio_path)[1].lower()
         if ext != ".wav":
@@ -316,11 +302,7 @@ def run_pronunciation_score(audio_id: int, wav_path: str, script_file_path: str,
         )
         final_score = max(0, match_score - penalty)
 
-        # DB 저장
-        pron_obj = db.query(Pronunciation).filter(Pronunciation.audio_id == audio_id).first()
-        if not pron_obj:
-            pron_obj = Pronunciation(audio_id=audio_id)
-            db.add(pron_obj)
+        # DB 저장 (같은 Pronunciation 객체 재사용)
         pron_obj.stt_text = stt_text
         pron_obj.matching_rate = match_score
 
@@ -329,8 +311,7 @@ def run_pronunciation_score(audio_id: int, wav_path: str, script_file_path: str,
         if not score_obj:
             score_obj = Score(video_id=video_id)
             db.add(score_obj)
-        # 모델 컬럼명이 pronounciation_score(오타)라면 그대로 사용
-        score_obj.pronounciation_score = final_score
+        score_obj.pronunciation_score = final_score
 
         db.commit()
 
