@@ -1,6 +1,6 @@
 # DB에서 데이터 CRUD 작업을 수행하는 함수들 모음.
 from typing import Iterable, Optional
-from app.models import Video, Frame, Audio, Gaze, Emotion, Speed, Pose, Pronunciation, Score, Pitch
+from app.models import Video, Frame, Audio, Gaze, Emotion, Speed, Pose, Pronunciation, Score, Pitch, Feedback
 
 from sqlalchemy.orm import Session
 
@@ -135,3 +135,15 @@ def bulk_insert_pitch(db: Session, items: Iterable[dict]) -> None:
     """
     objs = [Pitch(**it) for it in items]
     db.bulk_save_objects(objs)
+
+
+def create_feedback_record(db: Session, video_id: int, short_feedback: str, detail_feedback: str) -> Feedback:
+    fb = Feedback(
+        video_id=video_id,
+        short_feedback=short_feedback,
+        detail_feedback=detail_feedback
+    )
+    db.add(fb)
+    db.commit()
+    db.refresh(fb)
+    return fb
