@@ -221,7 +221,7 @@ def analyze_presentation_video(
     try:
         audio_obj = db.query(Audio).filter(Audio.video_id == video_id).first()
         if audio_obj:
-            speed_res = analyze_and_save_speed(db, audio_obj.id, wav_path)  # ✅ 로컬 wav_path
+            speed_res = analyze_and_save_speed(db, audio_obj.id, wav_path)  
             voice_speed_result = {
                 "segments": speed_res.get("segments", []),
                 "speed_rows": speed_res.get("speed_rows", []),
@@ -242,6 +242,7 @@ def analyze_presentation_video(
         },
         "voice": {
             "speed": {
+                "speed_rows": voice_speed_result.get("speed_rows", []),
                 "overall_wpm": voice_speed_result.get("overall_wpm"),
                 "knn_score": voice_speed_result.get("knn_score"),
             }
