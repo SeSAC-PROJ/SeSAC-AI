@@ -7,7 +7,7 @@ psycopg2-binary
 pydantic
 python-dotenv
 python-jose
-moviepy #모듈 못찾으면 다운그레이드
+moviepy 
 pydub
 aiofiles
 Pillow

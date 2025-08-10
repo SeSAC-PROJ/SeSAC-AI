@@ -128,10 +128,11 @@ def upsert_score(
         sc.speed_score = float(speed_score)
     if pronunciation_score is not None:
         sc.pronunciation_score = float(pronunciation_score)
+
     db.commit()
     db.refresh(sc)
     return sc
-
+  
 # Pitch 벌크 인서트 (voice_hz.py에서 사용)
 def bulk_insert_pitch(db: Session, items: Iterable[dict]) -> None:
     """
@@ -149,4 +150,5 @@ def create_feedback_record(db: Session, video_id: int, short_feedback: str, deta
     db.add(fb)
     db.commit()
     db.refresh(fb)
+
     return fb

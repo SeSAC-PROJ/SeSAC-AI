@@ -254,3 +254,4 @@ def classify_poses_and_save_to_db(
     }
     logger.info(f"Posture classification done: {result}")
     return result
+
