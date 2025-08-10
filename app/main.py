@@ -5,7 +5,7 @@
 import os
 os.environ["PATH"] += os.pathsep + r"C:\ffmpeg\bin"
 
-from fastapi import FastAPI, File, UploadFile, Form, Depends, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, Form, Depends, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 import shutil, uuid
@@ -18,7 +18,7 @@ from app.config import JWT_SECRET  # 사용 안 해도 유지
 # 추가 import
 from app.speech_pronunciation import run_pronunciation_score  # (audio_id, wav_path, script_path)
 from app.voice_hz import save_pitch_to_db                     # (audio_id, wav_path)
-from app.models import Audio, Pronunciation, Pitch, Score
+from app.models import Audio, Pronunciation, Pitch, Score, Feedback
 from app.feedback_chatbot import process_and_feedback
 
 
@@ -307,4 +307,44 @@ async def upload_video(
         "video_id": db_video.id,
         "s3_url": s3_video_url,
         "video_totaltime": video_totaltime,
+    }
+
+# --- 비디오 분석 결과 조회 엔드포인트 ---
+from fastapi import HTTPException
+
+@app.get("/videos/{video_id}/analysis")
+def get_video_analysis(video_id: int, db: Session = Depends(get_db)):
+    """
+    지정된 video_id에 대한 Score와 Feedback을 하나의 응답으로 반환합니다.
+    """
+    # Score 조회
+    score_obj = db.query(Score).filter(Score.video_id == video_id).first()
+    if not score_obj:
+        raise HTTPException(status_code=404, detail="Score not found for video")
+
+    # Feedback 조회 (가장 최신)
+    feedback_obj = (
+        db.query(Feedback)
+          .filter(Feedback.video_id == video_id)
+          .order_by(Feedback.created_at.desc())
+          .first()
+    )
+    if not feedback_obj:
+        raise HTTPException(status_code=404, detail="Feedback not found for video")
+
+    return {
+        "video_id": video_id,
+        "score": {
+            "pose_score": score_obj.pose_score,
+            "emotion_score": score_obj.emotion_score,
+            "gaze_score": score_obj.gaze_score,
+            "pitch_score": score_obj.pitch_score,
+            "speed_score": score_obj.speed_score,
+            "pronunciation_score": score_obj.pronunciation_score,
+        },
+        "feedback": {
+            "short_feedback": feedback_obj.short_feedback,
+            "detail_feedback": feedback_obj.detail_feedback,
+            "created_at": feedback_obj.created_at.isoformat(),
+        },
     }
