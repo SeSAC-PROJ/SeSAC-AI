@@ -1,5 +1,6 @@
 # db 테이블 구조를 SQLAlchemy ORM 클래스로 정의
 from sqlalchemy import Enum
+from sqlalchemy import text
 from sqlalchemy import Column, BigInteger, Float, String, ForeignKey, Text, TIMESTAMP, Integer
 from sqlalchemy.ext.declarative import declarative_base
 from app.db import Base
@@ -101,3 +102,11 @@ class Pose(Base):
     frame_id = Column(BigInteger, ForeignKey("frame.id", ondelete="CASCADE"), nullable=False)  # 프레임 FK
     image_type = Column(Enum("GOOD", "BAD", name="pose_image_type"), nullable=False)           # GOOD/BAD
     estimate_score = Column(Float, nullable=False)  
+
+class Feedback(Base):
+    __tablename__ = "feedback"
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    video_id = Column(BigInteger, ForeignKey("video.id", ondelete="CASCADE"), nullable=False)
+    short_feedback = Column(String(200), nullable=False)
+    detail_feedback = Column(Text, nullable=False)
+    created_at = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))

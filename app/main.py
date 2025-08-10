@@ -18,6 +18,8 @@ from app.config import JWT_SECRET  # 사용 안 해도 유지
 from app.speech_pronunciation import run_pronunciation_score  # (audio_id, wav_path, script_path)
 from app.voice_hz import save_pitch_to_db                     # (audio_id, wav_path)
 from app.models import Audio, Pronunciation, Pitch, Score
+from app.feedback_chatbot import process_and_feedback
+
 
 from app.posture_classifier import BASE_DIR, classify_poses_and_save_to_db
 from app.config import (
@@ -158,6 +160,23 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
 
         print(f"[INFO] Video analysis completed for video_id: {video_id}")
         print(f"[INFO] Analysis results: {results}")
+
+        # 7) 피드백 생성
+        try:
+            fb = process_and_feedback(results)
+            print("[INFO] Generated Feedback:", fb)
+            
+            # === DB 저장 부분 추가 ===
+            saved_fb = crud.create_feedback_record(
+                db=db,
+                video_id=video_id,
+                short_feedback=fb.get("short_feedback", ""),
+                detail_feedback=fb.get("detailed_feedback", "")
+            )
+            print(f"[INFO] Feedback saved! ID={saved_fb.id}")
+        
+        except Exception as e:
+            print(f"[ERROR] Failed to generate chatbot feedback: {e}")
 
     except Exception as e:
         print(f"[ERROR] Background processing failed for video_id {video_id}: {e}")
