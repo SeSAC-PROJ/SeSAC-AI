@@ -1,3 +1,4 @@
+
 # db 테이블 구조를 SQLAlchemy ORM 클래스로 정의
 from sqlalchemy import Enum
 from sqlalchemy import text

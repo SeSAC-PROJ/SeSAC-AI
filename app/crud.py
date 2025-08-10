@@ -1,3 +1,4 @@
+
 # DB에서 데이터 CRUD 작업을 수행하는 함수들 모음.
 from typing import Iterable, Optional
 from app.models import Video, Frame, Audio, Gaze, Emotion, Speed, Pose, Pronunciation, Score, Pitch, Feedback
