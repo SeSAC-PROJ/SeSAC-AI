@@ -55,6 +55,7 @@ class Speed(Base):
     wps = Column(Float, nullable=False)         # 초당 단어 수
     wpm = Column(Float, nullable=False)         # 분당 단어 수
     text = Column(Text, nullable=True)          # 문장 텍스트    
+    wpm_band = Column(Enum("good", "bad", name="wpm_band_enum"), nullable=True)  # 'good' or 'bad' 라벨링
 
 class Pitch(Base):
     __tablename__ = "pitch"

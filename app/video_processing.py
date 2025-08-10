@@ -217,17 +217,37 @@ def analyze_presentation_video(
         traceback.print_exc()
 
     # 4) 속도 분석 (이제 로컬 WAV만 사용)
-    voice_speed_result = {"segments": [], "speed_rows": [], "overall_wpm": 0.0, "knn_score": 0.0}
+    print(f"[INFO] Starting speed analysis for video_id: {video_id}")
+    voice_speed_result = {
+    "speed_rows": [],
+    "overall_wpm": 0.0,
+    "knn_score": 0.0,
+    "final_score": 0.0,
+    "bad_ratio": 0.0,
+    "penalty_ratio": 0.0,
+    "wpm_range": (100.0, 150.0),
+    "counts": {"good": 0, "bad": 0, "total": 0},
+    }
     try:
         audio_obj = db.query(Audio).filter(Audio.video_id == video_id).first()
         if audio_obj:
-            speed_res = analyze_and_save_speed(db, audio_obj.id, wav_path)  
-            voice_speed_result = {
-                "segments": speed_res.get("segments", []),
-                "speed_rows": speed_res.get("speed_rows", []),
-                "overall_wpm": speed_res.get("overall_wpm"),
-                "knn_score": speed_res.get("knn_score"),
-            }
+            speed_res = analyze_and_save_speed(db, audio_obj.id, wav_path)
+
+        speed_rows = speed_res.get("speed_rows", []) or []
+        total = len(speed_rows)
+        good_cnt = sum(1 for r in speed_rows if r.get("wpm_band") == "good")
+        bad_cnt = total - good_cnt
+        
+        voice_speed_result = {
+            "speed_rows": speed_rows,  # 각 row에 wpm_band 포함
+            "overall_wpm": speed_res.get("overall_wpm", 0.0),
+            "knn_score": speed_res.get("knn_score", 0.0),
+            "final_score": speed_res.get("final_score", 0.0),
+            "bad_ratio": speed_res.get("bad_ratio", (bad_cnt / total) if total else 0.0),
+            "penalty_ratio": speed_res.get("penalty_ratio", 0.0),
+            "wpm_range": speed_res.get("wpm_range", (100.0, 150.0)),
+            "counts": {"good": good_cnt, "bad": bad_cnt, "total": total},
+        }
     except Exception as e:
         print(f"[WARN] Speed analysis failed: {e}")
 
@@ -242,9 +262,18 @@ def analyze_presentation_video(
         },
         "voice": {
             "speed": {
-                "speed_rows": voice_speed_result.get("speed_rows", []),
-                "overall_wpm": voice_speed_result.get("overall_wpm"),
-                "knn_score": voice_speed_result.get("knn_score"),
+                "counts": voice_speed_result["counts"],
+                "bad_ratio": voice_speed_result["bad_ratio"],
+                "penalty_ratio": voice_speed_result["penalty_ratio"],
+                "wpm_range": voice_speed_result["wpm_range"],
+
+                # 점수
+                "overall_wpm": voice_speed_result["overall_wpm"],
+                "knn_score": voice_speed_result["knn_score"],
+                "final_score": voice_speed_result["final_score"],
+
+                # 구간 상세(프론트에서 타임라인 표시용)
+                "speed_rows": voice_speed_result["speed_rows"],
             }
         }
     }
