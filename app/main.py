@@ -13,14 +13,14 @@ from moviepy.editor import VideoFileClip
 
 from app.db import SessionLocal, engine, Base
 from app import crud, s3_utils, video_processing
-from app.config import JWT_SECRET
+from app.config import JWT_SECRET  # 사용 안 해도 유지
 
 # 추가 import
 from app.speech_pronunciation import run_pronunciation_score  # (audio_id, wav_path, script_path)
 from app.voice_hz import save_pitch_to_db                     # (audio_id, wav_path)
-from app.models import Audio, Pronunciation, Pitch
-from app.speed_analysis import analyze_and_save_speed
+from app.models import Audio, Pronunciation, Pitch, Score, Feedback
 from app.feedback_chatbot import process_and_feedback
+
 
 from app.posture_classifier import BASE_DIR, classify_poses_and_save_to_db
 from app.config import (
@@ -102,7 +102,7 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
             except Exception as e:
                 print(f"[WARN] Pronunciation scoring failed: {e}")
 
-            # 4) 피치 분석
+            # 4) 피치 분석 (DB 저장은 voice_hz.py 내부에서 crud 사용)
             try:
                 save_pitch_to_db(audio_id, wav_path)
             except Exception as e:
@@ -111,11 +111,12 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
             # 5) voice 결과 병합 (speed는 video_processing에서 넣음)
             pron_obj = db.query(Pronunciation).filter_by(audio_id=audio_id).first()
             pitch_obj = db.query(Pitch).filter_by(audio_id=audio_id).first()
+            score_obj = db.query(Score).filter_by(video_id=video_id).first()
 
             voice_block = results.get("voice", {})  # ✅ 기존 speed 유지
             voice_block["pronunciation"] = {
-                "matching_rate": getattr(pron_obj, "matching_rate", None),
-                "score": getattr(pron_obj, "matching_rate", None)  # 점수 컬럼 다르면 교체
+                "matching_rate": getattr(pron_obj, "matching_rate", None),         # Pronunciation에서
+                "score": getattr(score_obj, "pronunciation_score", None),          # ✅ Score에서
             }
             voice_block["pitch"] = {
                 "hz_std": getattr(pitch_obj, "hz_std", None),
@@ -123,13 +124,45 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
             }
             results["voice"] = voice_block
 
+            # 6) Score(emotion/speed/pitch) 최종 반영
+            score_obj = db.query(Score).filter(Score.video_id == video_id).first()
+            if not score_obj:
+                score_obj = Score(video_id=video_id)
+                db.add(score_obj)
+
+            # Emotion 점수
+            emo_score = (results.get("emotion") or {}).get("score")
+            if emo_score is not None:
+                try:
+                    score_obj.emotion_score = float(emo_score)
+                except Exception:
+                    pass
+
+            # Speed 점수 (knn_score 우선)
+            speed_block = (results.get("voice") or {}).get("speed") or {}
+            sp_score = speed_block.get("final_score", speed_block.get("knn_score", speed_block.get("score")))
+            if sp_score is not None:
+                try:
+                    score_obj.speed_score = float(sp_score)
+                except Exception:
+                    pass
+
+            # Pitch 점수 (Pitch 테이블의 score는 구간마다 동일값이므로 하나만 읽어도 됨)
+            if pitch_obj and getattr(pitch_obj, "pitch_score", None) is not None:
+                try:
+                    score_obj.pitch_score = float(pitch_obj.pitch_score)
+                except Exception:
+                    pass
+
+            db.commit()
+
         else:
             print("[WARN] Audio object not found in DB. Skipping voice analyses merge.")
 
         print(f"[INFO] Video analysis completed for video_id: {video_id}")
         print(f"[INFO] Analysis results: {results}")
 
-        # ✅ 챗봇 피드백 생성
+        # 7) 피드백 생성
         try:
             fb = process_and_feedback(results)
             print("[INFO] Generated Feedback:", fb)
@@ -274,4 +307,44 @@ async def upload_video(
         "video_id": db_video.id,
         "s3_url": s3_video_url,
         "video_totaltime": video_totaltime,
+    }
+
+# --- 비디오 분석 결과 조회 엔드포인트 ---
+from fastapi import HTTPException
+
+@app.get("/videos/{video_id}/analysis")
+def get_video_analysis(video_id: int, db: Session = Depends(get_db)):
+    """
+    지정된 video_id에 대한 Score와 Feedback을 하나의 응답으로 반환합니다.
+    """
+    # Score 조회
+    score_obj = db.query(Score).filter(Score.video_id == video_id).first()
+    if not score_obj:
+        raise HTTPException(status_code=404, detail="Score not found for video")
+
+    # Feedback 조회 (가장 최신)
+    feedback_obj = (
+        db.query(Feedback)
+          .filter(Feedback.video_id == video_id)
+          .order_by(Feedback.created_at.desc())
+          .first()
+    )
+    if not feedback_obj:
+        raise HTTPException(status_code=404, detail="Feedback not found for video")
+
+    return {
+        "video_id": video_id,
+        "score": {
+            "pose_score": score_obj.pose_score,
+            "emotion_score": score_obj.emotion_score,
+            "gaze_score": score_obj.gaze_score,
+            "pitch_score": score_obj.pitch_score,
+            "speed_score": score_obj.speed_score,
+            "pronunciation_score": score_obj.pronunciation_score,
+        },
+        "feedback": {
+            "short_feedback": feedback_obj.short_feedback,
+            "detail_feedback": feedback_obj.detail_feedback,
+            "created_at": feedback_obj.created_at.isoformat(),
+        },
     }

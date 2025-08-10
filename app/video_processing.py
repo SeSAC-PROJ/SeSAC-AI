@@ -172,6 +172,7 @@ def extract_frames_and_audio(
         except Exception:
             pass
 
+
 def analyze_presentation_video(
     video_path: str, out_dir: str, db: Session, video_id: int, s3_utils
 ) -> Tuple[Dict[str, Any], str]:
@@ -182,7 +183,7 @@ def analyze_presentation_video(
 
     # 2) 시선 분석
     print(f"[INFO] Starting gaze analysis for video_id: {video_id}")
-    gaze_results = {}
+    gaze_results = []
     try:
         gaze_results = gaze_analysis.analyze_and_save_gaze(
             bucket=AWS_BUCKET_NAME,
@@ -190,7 +191,6 @@ def analyze_presentation_video(
             db=db,
             region=AWS_REGION
         )
-        print(f"[DEBUG] gaze_results 타입: {type(gaze_results)}")
         print(f"[INFO] Gaze analysis completed with {len(gaze_results)} results")
     except Exception as e:
         print(f"[ERROR] Gaze analysis failed: {e}")
@@ -218,26 +218,43 @@ def analyze_presentation_video(
         traceback.print_exc()
 
     # 4) 속도 분석 (이제 로컬 WAV만 사용)
-    voice_speed_result = {"segments": [], "speed_rows": [], "overall_wpm": 0.0, "knn_score": 0.0}
+    print(f"[INFO] Starting speed analysis for video_id: {video_id}")
+    voice_speed_result = {
+    "speed_rows": [],
+    "overall_wpm": 0.0,
+    "knn_score": 0.0,
+    "final_score": 0.0,
+    "bad_ratio": 0.0,
+    "penalty_ratio": 0.0,
+    "wpm_range": (100.0, 150.0),
+    "counts": {"good": 0, "bad": 0, "total": 0},
+    }
     try:
         audio_obj = db.query(Audio).filter(Audio.video_id == video_id).first()
         if audio_obj:
-            speed_res = analyze_and_save_speed(db, audio_obj.id, wav_path)  
-            voice_speed_result = {
-                "segments": speed_res.get("segments", []),
-                "speed_rows": speed_res.get("speed_rows", []),
-                "overall_wpm": speed_res.get("overall_wpm"),
-                "knn_score": speed_res.get("knn_score"),
-            }
+            speed_res = analyze_and_save_speed(db, audio_obj.id, wav_path)
+
+        speed_rows = speed_res.get("speed_rows", []) or []
+        total = len(speed_rows)
+        good_cnt = sum(1 for r in speed_rows if r.get("wpm_band") == "good")
+        bad_cnt = total - good_cnt
+        
+        voice_speed_result = {
+            "speed_rows": speed_rows,  # 각 row에 wpm_band 포함
+            "overall_wpm": speed_res.get("overall_wpm", 0.0),
+            "knn_score": speed_res.get("knn_score", 0.0),
+            "final_score": speed_res.get("final_score", 0.0),
+            "bad_ratio": speed_res.get("bad_ratio", (bad_cnt / total) if total else 0.0),
+            "penalty_ratio": speed_res.get("penalty_ratio", 0.0),
+            "wpm_range": speed_res.get("wpm_range", (100.0, 150.0)),
+            "counts": {"good": good_cnt, "bad": bad_cnt, "total": total},
+        }
     except Exception as e:
         print(f"[WARN] Speed analysis failed: {e}")
 
     # 5) 결과 패키징 (posture는 main에서 추가/병합)
     results: Dict[str, Any] = {
-        "gaze": {
-        "gaze_results": {fid: dir for fid, dir in gaze_results.items() if fid != "gaze_score"},
-        "gaze_score": gaze_results.get("gaze_score", 0)
-        },
+        "gaze": gaze_results,
         "emotion": {
             "avg": (emotion_score_result or {}).get("user"),
             "ref": (emotion_score_result or {}).get("ref"),
@@ -246,9 +263,18 @@ def analyze_presentation_video(
         },
         "voice": {
             "speed": {
-                "speed_rows": voice_speed_result.get("speed_rows", []),
-                "overall_wpm": voice_speed_result.get("overall_wpm"),
-                "knn_score": voice_speed_result.get("knn_score"),
+                "counts": voice_speed_result["counts"],
+                "bad_ratio": voice_speed_result["bad_ratio"],
+                "penalty_ratio": voice_speed_result["penalty_ratio"],
+                "wpm_range": voice_speed_result["wpm_range"],
+
+                # 점수
+                "overall_wpm": voice_speed_result["overall_wpm"],
+                "knn_score": voice_speed_result["knn_score"],
+                "final_score": voice_speed_result["final_score"],
+
+                # 구간 상세(프론트에서 타임라인 표시용)
+                "speed_rows": voice_speed_result["speed_rows"],
             }
         }
     }

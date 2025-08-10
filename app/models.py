@@ -10,7 +10,7 @@ class Video(Base):
     __tablename__ = "video"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     user_id = Column(BigInteger, nullable=False)
-    upload_time = Column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
+    upload_time = Column(TIMESTAMP)
     title = Column(String(200))
     video_totaltime = Column(Float)
     video_url = Column(String(500), nullable=False)
@@ -57,12 +57,13 @@ class Speed(Base):
     wps = Column(Float, nullable=False)         # 초당 단어 수
     wpm = Column(Float, nullable=False)         # 분당 단어 수
     text = Column(Text, nullable=True)          # 문장 텍스트    
+    wpm_band = Column(Enum("good", "bad", name="wpm_band_enum"), nullable=True)  # 'good' or 'bad' 라벨링
 
 class Pitch(Base):
     __tablename__ = "pitch"
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     audio_id = Column(BigInteger, ForeignKey("audio.id", ondelete="CASCADE"), nullable=False)
-    hz = Column(Float, nullable=True)
+    hz = Column(Float, nullable=False)
     time = Column(Float, nullable=False)
     hz_std = Column(Float, nullable=False)
     proper_csv = Column(Float, nullable=False)
