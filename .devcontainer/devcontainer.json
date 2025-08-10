@@ -1,0 +1,33 @@
+{
+  "name": "KSEB-AI Dev Container",
+  "dockerFile": "../Dockerfile",
+  "forwardPorts": [
+    8000
+  ],
+  "containerEnv": {
+    "POETRY_VIRTUALENVS_IN_PROJECT": "true",
+    "PIP_CACHE_DIR": "/workspace/.cache/pip",
+    "POETRY_CACHE_DIR": "/workspace/.cache/pypoetry"
+  },
+  "postCreateCommand": "pip install -U pip poetry && poetry install --no-root --no-interaction --no-ansi",
+  "postStartCommand": "poetry install --sync --no-root --no-interaction --no-ansi",
+  "mounts": [
+    "type=volume,source=pip-cache,target=/workspace/.cache/pip",
+    "type=volume,source=poetry-cache,target=/workspace/.cache/pypoetry",
+    "type=volume,source=venv,target=/workspace/.venv"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/workspace/.venv/bin/python"
+      }
+    }
+  },
+  "runArgs": [
+    "--name",
+    "kseb-ai-dev-container"
+  ]
+}

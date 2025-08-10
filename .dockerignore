@@ -1,0 +1,13 @@
+# .dockerignore
+
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+
+# Local data and logs
+data/
+logs/
