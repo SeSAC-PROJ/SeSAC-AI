@@ -137,7 +137,7 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
 
             # Speed 점수 (knn_score 우선)
             speed_block = (results.get("voice") or {}).get("speed") or {}
-            sp_score = speed_block.get("knn_score", speed_block.get("score"))
+            sp_score = speed_block.get("final_score", speed_block.get("knn_score", speed_block.get("score")))
             if sp_score is not None:
                 try:
                     score_obj.speed_score = float(sp_score)
