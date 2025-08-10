@@ -324,3 +324,4 @@ def run_pronunciation_score(audio_id: int, wav_path: str, script_file_path: str,
             db.close()
         except Exception:
             pass
+
