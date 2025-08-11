@@ -52,3 +52,13 @@ def read_image_from_s3(bucket: str, key: str):
     except Exception as e:
         print(f"Error reading image from S3: {e}")
         return None
+
+def delete_file_from_s3(s3_key: str):
+    bucket, _ = get_s3_bucket()
+    try:
+        bucket.delete_objects(Delete={'Objects': [{'Key': s3_key}]})
+        print(f"S3 파일 삭제 성공: {s3_key}")
+        return True
+    except Exception as e:
+        print(f"S3 파일 삭제 에러: {e}")
+        raise

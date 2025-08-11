@@ -560,3 +560,23 @@ def list_my_video_ids(
         "user_id": user_id,
         "video_ids": [r.id for r in rows],
     }
+
+# --- 비디오 삭제 엔드포인트 ---
+@app.delete("/videos/{video_id}")
+async def delete_video(
+    video_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id)
+):
+    video = crud.get_video(db, video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Authorization check
+    if video.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this video")
+
+    if crud.delete_video(db, video_id):
+        return {"message": "Video deleted successfully"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to delete video")

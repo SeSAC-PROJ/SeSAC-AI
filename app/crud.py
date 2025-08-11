@@ -2,6 +2,7 @@
 # DB에서 데이터 CRUD 작업을 수행하는 함수들 모음.
 from typing import Iterable, Optional
 from app.models import Video, Frame, Audio, Gaze, Emotion, Speed, Pose, Pronunciation, Score, Pitch, Feedback
+from app.s3_utils import delete_file_from_s3
 
 from sqlalchemy.orm import Session
 
@@ -152,3 +153,18 @@ def create_feedback_record(db: Session, video_id: int, short_feedback: str, deta
     db.refresh(fb)
 
     return fb
+
+def get_video(db: Session, video_id: int):
+    return db.query(Video).filter(Video.id == video_id).first()
+
+def delete_video(db: Session, video_id: int):
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if video:
+        # Delete file from S3
+        if video.video_url:
+            delete_file_from_s3(video.video_url)
+        db.delete(video)
+        db.commit()
+        return True
+    return False
+
