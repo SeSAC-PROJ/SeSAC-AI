@@ -31,6 +31,7 @@ pandas = "*"
 numpy = "*"
 tqdm = "*"
 openai-whisper = {git = "https://github.com/openai/whisper.git"}
+openai = "^1.99.7"
 
 
 [build-system]
