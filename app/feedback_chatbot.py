@@ -11,7 +11,7 @@ if not openai.api_key:
     raise ValueError("OPENAI_API_KEY가 설정되지 않았습니다.")
 
 class PresentationFeedbackBot:
-    def __init__(self, model: str = "gpt-3.5-turbo"):
+    def __init__(self, model: str = "gpt-4.1"):
         self.model = model
 
     def build_prompt(self, analysis: Dict[str, Any]) -> str:
@@ -48,8 +48,8 @@ class PresentationFeedbackBot:
                 {"role": "system", "content": "당신은 경험 많은 발표 코치입니다. 사용자는 응답할 수 없습니다."},
                 {"role": "user",   "content": prompt}
             ],
-            max_tokens=500,
-            temperature=0.7,
+            max_completion_tokens=500,
+            temperature=1,
         )
         content = response.choices[0].message.content.strip()
         import json
