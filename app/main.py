@@ -26,6 +26,7 @@ from app import config
 from app.db import SessionLocal, engine, Base
 from app import crud, s3_utils, video_processing
 from app.config import JWT_SECRET
+from app.emotion_analysis import get_emotion_averages_corrected_for_front
 
 # 추가 import
 from app.speech_pronunciation import run_pronunciation_score
@@ -415,26 +416,8 @@ def get_video_analysis(video_id: int, db: Session = Depends(get_db), user_id: in
     if not feedback_obj:
         raise HTTPException(status_code=404, detail="Feedback not found for video")
 
-    # === 감정 평균 (버전/0건 안전) ===
-    em_row = (
-        db.query(
-            func.avg(Emotion.angry).label("angry"),
-            func.avg(Emotion.fear).label("fear"),
-            func.avg(Emotion.surprise).label("surprise"),
-            func.avg(Emotion.happy).label("happy"),
-            func.avg(Emotion.sad).label("sad"),
-            func.avg(Emotion.neutral).label("neutral"),
-        )
-        .join(Frame, Emotion.frame_id == Frame.id)
-        .filter(Frame.video_id == video_id)
-        .first()  # one() 대신 first()
-    )
-
-    keys = ["angry", "fear", "surprise", "happy", "sad", "neutral"]
-    if em_row is None:
-        emotion_avg = {k: None for k in keys}
-    else:
-        emotion_avg = {k: _safe_float(getattr(em_row, k, None), nd=4) for k in keys}
+    # === 감정 평균 (프론트 보정 버전 / 0건 안전) ===
+    emotion_avg = get_emotion_averages_corrected_for_front(db, video_id)
 
     # === 다른 테이블 데이터 (직렬화 안전) ===
     frames = db.query(Frame).filter(Frame.video_id == video_id).all()

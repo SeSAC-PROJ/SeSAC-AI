@@ -256,3 +256,45 @@ def get_all_emotion_averages_corrected(db: Session, video_id: int):
     # 비율로 변환
     return {k: count / total_count for k, count in emotion_counts.items()}
 
+
+def get_emotion_averages_corrected_for_front(db: Session, video_id: int):
+    """
+    Emotion 원시값(DeepFace 퍼센티지)을 읽어
+    - 프레임별 dominant 산출
+    - 보정 로직 적용
+    - 감정별 비율 반환
+    프론트로 보내는 보정 분포.
+    """
+    rows = (
+        db.query(Emotion)
+          .join(Frame, Emotion.frame_id == Frame.id)
+          .filter(Frame.video_id == video_id)
+          .all()
+    )
+
+    keys = ["angry", "fear", "surprise", "happy", "sad", "neutral"]
+    total = len(rows)
+    if total == 0:
+        return {k: 0.0 for k in keys}
+
+    counts = {k: 0 for k in keys}
+
+    for r in rows:
+        dominant = max(
+            [("angry", r.angry), ("fear", r.fear), ("surprise", r.surprise),
+             ("happy", r.happy), ("sad", r.sad), ("neutral", r.neutral)],
+            key=lambda x: x[1]
+        )[0]
+
+        # 보정 규칙
+        if dominant in ["sad", "fear", "angry"]:
+            # None 안전 처리
+            neutral_val = float(r.neutral or 0.0)
+            happy_val = float(r.happy or 0.0)
+            if neutral_val > 20.0 or happy_val > 25.0:
+                dominant = "neutral"
+
+        counts[dominant] += 1
+
+    return {k: counts[k] / total for k in keys}
+

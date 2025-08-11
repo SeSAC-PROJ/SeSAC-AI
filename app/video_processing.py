@@ -1,4 +1,3 @@
-
 from moviepy.editor import VideoFileClip
 import os
 from typing import Tuple, Dict, Any
@@ -249,16 +248,15 @@ def analyze_presentation_video(
             "wpm_range": speed_res.get("wpm_range", (100.0, 150.0)),
             "counts": {"good": good_cnt, "bad": bad_cnt, "total": total},
         }
+        print(f"[INFO] Speed analysis completed: {voice_speed_result}")
     except Exception as e:
         print(f"[WARN] Speed analysis failed: {e}")
 
+    
     # 5) 결과 패키징 (posture는 main에서 추가/병합)
     results: Dict[str, Any] = {
         "gaze": gaze_results,
         "emotion": {
-            "avg": (emotion_score_result or {}).get("user"),
-            "ref": (emotion_score_result or {}).get("ref"),
-            "score": (emotion_score_result or {}).get("score"),
             "all_avg": all_emotion_avg
         },
         "voice": {
