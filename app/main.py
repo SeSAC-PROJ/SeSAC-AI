@@ -7,17 +7,33 @@ os.environ["PATH"] += os.pathsep + r"C:\ffmpeg\bin"
 from fastapi import FastAPI, File, UploadFile, Form, Depends, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 import shutil, uuid
 from moviepy.editor import VideoFileClip
 
+# CORS
+from fastapi.middleware.cors import CORSMiddleware
+
+# JWT
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import jwt, JWTError
+
+from datetime import datetime, timezone
+from typing import Optional
+import json
+
+from app import config
 from app.db import SessionLocal, engine, Base
 from app import crud, s3_utils, video_processing
 from app.config import JWT_SECRET
 
 # 추가 import
-from app.speech_pronunciation import run_pronunciation_score  # (audio_id, wav_path, script_path)
-from app.voice_hz import save_pitch_to_db                     # (audio_id, wav_path)
-from app.models import Audio, Pronunciation, Pitch
+from app.speech_pronunciation import run_pronunciation_score
+from app.voice_hz import save_pitch_to_db
+from app.models import (
+    Audio, Emotion, Frame, Pose, Pronunciation, Pitch, Score, Feedback, Speed, Video
+)
+from app.feedback_chatbot import process_and_feedback
 
 from app.posture_classifier import BASE_DIR, classify_poses_and_save_to_db
 from app.config import (
@@ -29,6 +45,74 @@ from app.config import (
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI()
+
+# --- CORS 설정 ---
+origins = [
+    "http://localhost:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Auth ---
+security = HTTPBearer()
+
+async def get_current_user_id(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> int:
+    """
+    JWT 토큰에서 userId(id, sub 대체) 추출 + exp 만료 검증.
+    - 서명키/알고리즘은 .env의 JWT_SECRET / (기본 HS256) 사용.
+    """
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(
+            token,
+            config.JWT_SECRET,
+            algorithms=[config.ALGORITHM],
+        )
+
+        # 디버그용 payload 확인
+        print("--- DECODED JWT PAYLOAD ---")
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        print("---------------------------")
+
+        user_id = payload.get("userId") or payload.get("id") or payload.get("sub")
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid token: user_id not found")
+
+        exp = payload.get("exp")
+        if exp is None or datetime.fromtimestamp(exp, tz=timezone.utc) < datetime.now(tz=timezone.utc):
+            raise HTTPException(status_code=401, detail="Token has expired or invalid")
+
+        # 이메일(sub)로 들어오면 int 변환에서 실패함 → 발급 로직에서 userId(정수 PK) 넣도록 권장
+        return int(user_id)
+    except ValueError:
+        # user_id가 정수가 아닌 경우(예: 이메일). 여기서 이메일→정수 PK 매핑 로직을 추가하든지, 토큰 발급을 수정.
+        raise HTTPException(status_code=401, detail="Invalid token: user_id is not numeric")
+    except JWTError as exc:
+        print(f"!!! JWT DECODE ERROR: {exc}")
+        raise HTTPException(status_code=401, detail="Invalid token") from exc
+
+
+# --- 공용 유틸 ---
+def _safe_float(x, nd=None):
+    try:
+        f = float(x)
+        return round(f, nd) if (nd is not None) else f
+    except Exception:
+        return None
+
+def _safe_str(x):
+    try:
+        return "" if x is None else str(x)
+    except Exception:
+        return ""
 
 
 # --- DB 세션 유틸 ---
@@ -99,7 +183,7 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
             except Exception as e:
                 print(f"[WARN] Pronunciation scoring failed: {e}")
 
-            # 4) 피치 분석
+            # 4) 피치 분석 (DB 저장은 voice_hz.py 내부에서 crud 사용)
             try:
                 save_pitch_to_db(audio_id, wav_path)
             except Exception as e:
@@ -108,11 +192,12 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
             # 5) voice 결과 병합 (speed는 video_processing에서 넣음)
             pron_obj = db.query(Pronunciation).filter_by(audio_id=audio_id).first()
             pitch_obj = db.query(Pitch).filter_by(audio_id=audio_id).first()
+            score_obj = db.query(Score).filter_by(video_id=video_id).first()
 
             voice_block = results.get("voice", {})  # ✅ 기존 speed 유지
             voice_block["pronunciation"] = {
-                "matching_rate": getattr(pron_obj, "matching_rate", None),
-                "score": getattr(pron_obj, "matching_rate", None)  # 점수 컬럼 다르면 교체
+                "matching_rate": getattr(pron_obj, "matching_rate", None),   # Pronunciation에서
+                "score": getattr(score_obj, "pronunciation_score", None),    # ✅ Score에서
             }
             voice_block["pitch"] = {
                 "hz_std": getattr(pitch_obj, "hz_std", None),
@@ -120,11 +205,60 @@ def process_video_background(video_path: str, script_path: str, out_dir: str, vi
             }
             results["voice"] = voice_block
 
+            # 6) Score(emotion/speed/pitch) 최종 반영
+            score_obj = db.query(Score).filter(Score.video_id == video_id).first()
+            if not score_obj:
+                score_obj = Score(video_id=video_id)
+                db.add(score_obj)
+
+            # Emotion 점수
+            emo_score = (results.get("emotion") or {}).get("score")
+            if emo_score is not None:
+                try:
+                    score_obj.emotion_score = float(emo_score)
+                except Exception:
+                    pass
+
+            # Speed 점수 (knn_score 우선)
+            speed_block = (results.get("voice") or {}).get("speed") or {}
+            sp_score = speed_block.get("final_score", speed_block.get("knn_score", speed_block.get("score")))
+            if sp_score is not None:
+                try:
+                    score_obj.speed_score = float(sp_score)
+                except Exception:
+                    pass
+
+            # Pitch 점수 (Pitch 테이블의 score는 구간마다 동일값이므로 하나만 읽어도 됨)
+            if pitch_obj and getattr(pitch_obj, "pitch_score", None) is not None:
+                try:
+                    score_obj.pitch_score = float(pitch_obj.pitch_score)
+                except Exception:
+                    pass
+
+            db.commit()
+
         else:
-            print("[WARN] Audio object not found in DB. Skipping voice analyses merge.")
+            print("[WARN] Audio object not found in DB. Skipping voice analyses merge.]")
 
         print(f"[INFO] Video analysis completed for video_id: {video_id}")
         print(f"[INFO] Analysis results: {results}")
+
+        # 7) 피드백 생성 + 저장 (키 안전화)
+        try:
+            fb = process_and_feedback(results)
+            print("[INFO] Generated Feedback:", fb)
+
+            detail_text = fb.get("detailed_feedback", fb.get("detail_feedback", "")) or ""
+            saved_fb = crud.create_feedback_record(
+                db=db,
+                video_id=video_id,
+                short_feedback=fb.get("short_feedback", "") or "",
+                detail_feedback=detail_text
+            )
+            print(f"[INFO] Feedback saved! ID={saved_fb.id}")
+
+        except Exception as e:
+            print(f"[ERROR] Failed to generate chatbot feedback: {e}")
 
     except Exception as e:
         print(f"[ERROR] Background processing failed for video_id {video_id}: {e}")
@@ -193,12 +327,11 @@ async def upload_video(
     file: UploadFile = File(...),
     script: UploadFile = File(...),
     title: str = Form(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id)
 ):
-    user_id = 1
-
     os.makedirs("temp", exist_ok=True)
-
+    print(user_id)
     # 1) 비디오 파일 저장 (로컬)
     temp_file_name = f"{uuid.uuid4()}_{file.filename}"
     temp_file_path = os.path.join("temp", temp_file_name)
@@ -254,4 +387,193 @@ async def upload_video(
         "video_id": db_video.id,
         "s3_url": s3_video_url,
         "video_totaltime": video_totaltime,
+    }
+
+
+# --- 비디오 분석 결과 조회 엔드포인트 ---
+@app.get("/videos/{video_id}/analysis")
+def get_video_analysis(video_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
+    # === 기본 정보 ===
+    video_obj = db.query(Video).filter(Video.id == video_id).first()
+    if not video_obj:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # --- Authorization Check ---
+    if video_obj.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this video")
+
+    score_obj = db.query(Score).filter(Score.video_id == video_id).first()
+    if not score_obj:
+        raise HTTPException(status_code=404, detail="Score not found for video")
+
+    feedback_obj = (
+        db.query(Feedback)
+          .filter(Feedback.video_id == video_id)
+          .order_by(Feedback.created_at.desc())
+          .first()
+    )
+    if not feedback_obj:
+        raise HTTPException(status_code=404, detail="Feedback not found for video")
+
+    # === 감정 평균 (버전/0건 안전) ===
+    em_row = (
+        db.query(
+            func.avg(Emotion.angry).label("angry"),
+            func.avg(Emotion.fear).label("fear"),
+            func.avg(Emotion.surprise).label("surprise"),
+            func.avg(Emotion.happy).label("happy"),
+            func.avg(Emotion.sad).label("sad"),
+            func.avg(Emotion.neutral).label("neutral"),
+        )
+        .join(Frame, Emotion.frame_id == Frame.id)
+        .filter(Frame.video_id == video_id)
+        .first()  # one() 대신 first()
+    )
+
+    keys = ["angry", "fear", "surprise", "happy", "sad", "neutral"]
+    if em_row is None:
+        emotion_avg = {k: None for k in keys}
+    else:
+        emotion_avg = {k: _safe_float(getattr(em_row, k, None), nd=4) for k in keys}
+
+    # === 다른 테이블 데이터 (직렬화 안전) ===
+    frames = db.query(Frame).filter(Frame.video_id == video_id).all()
+    audios = db.query(Audio).filter(Audio.video_id == video_id).all()
+
+    frame_data = [
+        {
+            "id": f.id,
+            "frame_timestamp": _safe_float(f.frame_timestamp),
+            "image_url": _safe_str(f.image_url),
+        }
+        for f in frames
+    ]
+
+    audio_data = []
+    for a in audios:
+        # speed
+        speeds = db.query(Speed).filter(Speed.audio_id == a.id).all()
+        speed_data = [
+            {
+                "id": s.id,
+                "stn_start": _safe_float(s.stn_start),
+                "stn_end": _safe_float(s.stn_end),
+                "duration": _safe_float(s.duration),
+                "num_words": s.num_words,
+                "wps": _safe_float(s.wps),
+                "wpm": _safe_float(s.wpm),
+                "text": s.text or "",
+                "wpm_band": _safe_str(s.wpm_band),
+            }
+            for s in speeds
+        ]
+
+        # pitch
+        pitches = db.query(Pitch).filter(Pitch.audio_id == a.id).all()
+        pitch_data = [
+            {
+                "id": p.id,
+                "hz": _safe_float(p.hz),
+                "time": _safe_float(p.time),
+                "hz_std": _safe_float(p.hz_std),
+                "proper_csv": _safe_float(p.proper_csv),
+                "pitch_score": _safe_float(p.pitch_score),
+            }
+            for p in pitches
+        ]
+
+        # pronunciation
+        prons = db.query(Pronunciation).filter(Pronunciation.audio_id == a.id).all()
+        pron_data = [
+            {
+                "id": pr.id,
+                "script_text": pr.script_text or "",
+                "stt_text": pr.stt_text or "",
+                "matching_rate": _safe_float(pr.matching_rate),
+            }
+            for pr in prons
+        ]
+
+        audio_data.append({
+            "id": a.id,
+            "audio_url": _safe_str(a.audio_url),
+            "duration": _safe_float(a.duration),
+            "speed": speed_data,
+            "pitch": pitch_data,
+            "pronunciation": pron_data,
+        })
+
+    # 포즈 (Frame 조인)
+    poses = (
+        db.query(Pose)
+          .join(Frame, Pose.frame_id == Frame.id)
+          .filter(Frame.video_id == video_id)
+          .all()
+    )
+    pose_data = [
+        {
+            "id": p.id,
+            "frame_id": p.frame_id,
+            "image_type": _safe_str(p.image_type),
+            "estimate_score": _safe_float(p.estimate_score),
+        }
+        for p in poses
+    ]
+
+    # results (문자열이면 JSON 변환, 실패시 None)
+    results = getattr(score_obj, "results", None)
+    if isinstance(results, str):
+        try:
+            import json
+            results = json.loads(results)
+        except Exception:
+            results = None
+
+    # === 최종 리턴 ===
+    return {
+        "video": {
+            "id": video_obj.id,
+            "user_id": video_obj.user_id,
+            "upload_time": video_obj.upload_time.isoformat() if video_obj.upload_time else None,
+            "title": video_obj.title,
+            "video_totaltime": _safe_float(video_obj.video_totaltime),
+            "video_url": _safe_str(video_obj.video_url),
+        },
+        "score": {
+            "pose_score": _safe_float(score_obj.pose_score),
+            "gaze_score": _safe_float(score_obj.gaze_score),
+            "pitch_score": _safe_float(score_obj.pitch_score),
+            "speed_score": _safe_float(score_obj.speed_score),
+            "pronunciation_score": _safe_float(score_obj.pronunciation_score),
+            "emotion_score": _safe_float(score_obj.emotion_score),
+        },
+        "emotion_avg": emotion_avg,  # ✅ 비디오 단위 감정 평균
+        "feedback": {
+            "short_feedback": feedback_obj.short_feedback or "",
+            "detail_feedback": feedback_obj.detail_feedback or "",
+            "created_at": feedback_obj.created_at.isoformat() if feedback_obj.created_at else None,
+        },
+        
+        "audios": audio_data,
+        "poses": pose_data,
+       
+    }
+# === 내 비디오 ID 추출 ===
+@app.get("/videos/my/ids")
+def list_my_video_ids(
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    현재 사용자(user_id)가 가진 video_id만 리스트로 반환.
+    """
+    rows = (
+        db.query(Video.id)
+          .filter(Video.user_id == user_id)
+          .order_by(Video.upload_time.desc())
+          .all()
+    )
+    return {
+        "user_id": user_id,
+        "video_ids": [r.id for r in rows],
     }

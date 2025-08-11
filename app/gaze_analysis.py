@@ -7,222 +7,237 @@ from app import crud
 from app.models import Frame
 from app.config import AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
 
-# MediaPipe 초기화
+
+# MediaPipe Face Mesh 초기화
 mp_face_mesh = mp.solutions.face_mesh
-mp_face_detection = mp.solutions.face_detection
-mp_drawing = mp.solutions.drawing_utils
+_FACE_MESH = mp_face_mesh.FaceMesh(
+    static_image_mode=True,
+    max_num_faces=1,
+    refine_landmarks=True,
+    min_detection_confidence=0.3,
+    min_tracking_confidence=0.3
+)
+
+
+# 더 관대한 임계값 설정
+HORIZ_LEFT_THRESH   = 0.3
+HORIZ_RIGHT_THRESH  = 0.7
+VERT_DOWN_THRESH    = 0.6
+
+
+# 눈 관련 랜드마크 인덱스
+LEFT_IRIS_CENTER = 468
+RIGHT_IRIS_CENTER = 473
+LEFT_EYE_INNER = 133
+LEFT_EYE_OUTER = 33
+RIGHT_EYE_INNER = 362
+RIGHT_EYE_OUTER = 263
+LEFT_EYE_UPPER = 159
+LEFT_EYE_LOWER = 145
+RIGHT_EYE_UPPER = 380
+RIGHT_EYE_LOWER = 385
+
+
+# 눈 깜빡임 검출용
+LEFT_EYE_LANDMARKS = [33, 159, 158, 133, 153, 145]
+RIGHT_EYE_LANDMARKS = [362, 380, 374, 263, 386, 385]
+
 
 def read_image_from_s3(bucket: str, key: str):
-    """S3에서 이미지를 읽고 올바른 형식으로 변환"""
-    s3_client = boto3.client(
+    """S3에서 이미지를 읽고 OpenCV 이미지로 반환"""
+    s3 = boto3.client(
         's3',
         aws_access_key_id=AWS_ACCESS_KEY_ID,
         aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
         region_name=AWS_REGION
     )
     try:
-        print(f"[DEBUG] Reading image from S3: {key}")
-        res = s3_client.get_object(Bucket=bucket, Key=key)
-        img_data = res['Body'].read()
-        
-        # 바이트 데이터를 numpy 배열로 변환
-        img_array = np.frombuffer(img_data, np.uint8)
-        
-        # OpenCV로 이미지 디코딩
-        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        
-        if img is None:
-            print(f"[ERROR] Failed to decode image: {key}")
-            return None
-            
-        return img
-        
+        res = s3.get_object(Bucket=bucket, Key=key)
+        arr = np.frombuffer(res['Body'].read(), np.uint8)
+        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
     except Exception as e:
-        print(f"[ERROR] Error reading image from S3: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"[ERROR] 읽기 실패: {e}")
         return None
 
-def detect_gaze_direction_with_mediapipe(image):
-    """MediaPipe를 사용한 시선 방향 감지"""
-    # RGB로 변환 (MediaPipe는 RGB를 사용)
-    rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    
-    with mp_face_mesh.FaceMesh(
-        static_image_mode=True,
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
-    ) as face_mesh:
-        
-        results = face_mesh.process(rgb_image)
-        
-        if not results.multi_face_landmarks:
-            print("[DEBUG] No face landmarks detected")
-            return "unknown"
-        
-        # 첫 번째 얼굴의 랜드마크 사용
-        face_landmarks = results.multi_face_landmarks[0]
-        
-        # 눈과 코의 주요 랜드마크 인덱스
-        LEFT_EYE_CENTER = 468  # 왼쪽 눈 중심 (홍채)
-        RIGHT_EYE_CENTER = 473  # 오른쪽 눈 중심 (홍채)
-        LEFT_EYE_INNER = 133   # 왼쪽 눈 안쪽 모서리
-        LEFT_EYE_OUTER = 33    # 왼쪽 눈 바깥쪽 모서리
-        RIGHT_EYE_INNER = 362  # 오른쪽 눈 안쪽 모서리
-        RIGHT_EYE_OUTER = 263  # 오른쪽 눈 바깥쪽 모서리
-        NOSE_TIP = 1           # 코끝
-        
-        # 이미지 크기
-        h, w, _ = image.shape
-        
-        # 랜드마크 좌표 추출
-        landmarks = []
-        for landmark in face_landmarks.landmark:
-            x = int(landmark.x * w)
-            y = int(landmark.y * h)
-            landmarks.append((x, y))
-        
-        # 눈 중심점들
-        try:
-            if len(landmarks) > max(LEFT_EYE_CENTER, RIGHT_EYE_CENTER, LEFT_EYE_INNER, LEFT_EYE_OUTER, RIGHT_EYE_INNER, RIGHT_EYE_OUTER):
-                # 눈의 중심점과 모서리를 이용해 시선 방향 추정
-                left_eye_center = landmarks[LEFT_EYE_CENTER] if LEFT_EYE_CENTER < len(landmarks) else landmarks[133]
-                right_eye_center = landmarks[RIGHT_EYE_CENTER] if RIGHT_EYE_CENTER < len(landmarks) else landmarks[362]
-                
-                left_eye_inner = landmarks[LEFT_EYE_INNER]
-                left_eye_outer = landmarks[LEFT_EYE_OUTER]
-                right_eye_inner = landmarks[RIGHT_EYE_INNER]
-                right_eye_outer = landmarks[RIGHT_EYE_OUTER]
-                
-                # 왼쪽 눈의 수평 위치 비율 계산
-                left_eye_width = abs(left_eye_outer[0] - left_eye_inner[0])
-                left_pupil_x = left_eye_center[0] - left_eye_inner[0]
-                left_ratio = left_pupil_x / left_eye_width if left_eye_width > 0 else 0.5
-                
-                # 오른쪽 눈의 수평 위치 비율 계산
-                right_eye_width = abs(right_eye_outer[0] - right_eye_inner[0])
-                right_pupil_x = right_eye_center[0] - right_eye_inner[0]
-                right_ratio = right_pupil_x / right_eye_width if right_eye_width > 0 else 0.5
-                
-                # 평균 비율 계산
-                avg_ratio = (left_ratio + right_ratio) / 2
-                
-                print(f"[DEBUG] Left ratio: {left_ratio:.3f}, Right ratio: {right_ratio:.3f}, Avg: {avg_ratio:.3f}")
-                
-                # 시선 방향 결정
-                if avg_ratio < 0.35:
-                    return "left"
-                elif avg_ratio > 0.65:
-                    return "right"
-                else:
-                    return "center"
-            else:
-                print("[DEBUG] Using simplified eye landmark detection")
-                # 기본적인 눈 랜드마크만 사용
-                left_eye = landmarks[133]  # 왼쪽 눈
-                right_eye = landmarks[362]  # 오른쪽 눈
-                nose = landmarks[1]  # 코끝
-                
-                # 눈과 코의 위치를 기반으로 간단한 시선 추정
-                eye_center_x = (left_eye[0] + right_eye[0]) / 2
-                face_center_x = w / 2
-                
-                if eye_center_x < face_center_x - 20:
-                    return "left"
-                elif eye_center_x > face_center_x + 20:
-                    return "right"
-                else:
-                    return "center"
-                    
-        except Exception as e:
-            print(f"[DEBUG] Landmark processing error: {e}")
-            return "center"  # 기본값으로 center 반환
+
+def calculate_eye_aspect_ratio(eye_points):
+    """눈 깜빡임 검출을 위한 EAR 계산"""
+    try:
+        # 수직 거리들
+        A = np.linalg.norm(np.array(eye_points[1]) - np.array(eye_points[5]))
+        B = np.linalg.norm(np.array(eye_points[2]) - np.array(eye_points[4]))
+        # 수평 거리
+        C = np.linalg.norm(np.array(eye_points[0]) - np.array(eye_points[3]))
+        # EAR 계산
+        ear = (A + B) / (2.0 * C) if C > 0 else 0
+        return ear
+    except:
+        return 0.3
+
+
+def is_eye_closed(eye_points, threshold=0.05): # 방금 여기 수정
+    """EAR로 눈 깜빡임 검출"""
+    ear = calculate_eye_aspect_ratio(eye_points)
+    return ear < threshold
+
+
+def detect_gaze_direction_with_mediapipe(image: np.ndarray) -> str:
+    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    results = _FACE_MESH.process(rgb)
+   
+    if not results.multi_face_landmarks:
+        print("[DEBUG] No face detected")
+        return "center"
+
+    lm = results.multi_face_landmarks[0].landmark
+    h, w, _ = image.shape
+    landmarks = [(int(p.x * w), int(p.y * h)) for p in lm]
+
+    try:
+        # 눈 깜빡임 검사
+        left_eye_points = [landmarks[i] for i in LEFT_EYE_LANDMARKS]
+        right_eye_points = [landmarks[i] for i in RIGHT_EYE_LANDMARKS]
+        left_closed = is_eye_closed(left_eye_points)
+        right_closed = is_eye_closed(right_eye_points)
+
+        print(f"[DEBUG] Left eye closed: {left_closed}, Right eye closed: {right_closed}")
+        if left_closed or right_closed:
+            print("[DEBUG] Eye blink detected -> down")
+            return "down"
+
+        # 홍채와 눈 윤곽 landmark
+        left_iris = landmarks[LEFT_IRIS_CENTER]
+        right_iris = landmarks[RIGHT_IRIS_CENTER]
+        left_inner = landmarks[LEFT_EYE_INNER]
+        left_outer = landmarks[LEFT_EYE_OUTER]
+        right_inner = landmarks[RIGHT_EYE_INNER]
+        right_outer = landmarks[RIGHT_EYE_OUTER]
+        left_upper = landmarks[LEFT_EYE_UPPER]
+        left_lower = landmarks[LEFT_EYE_LOWER]
+        right_upper = landmarks[RIGHT_EYE_UPPER]
+        right_lower = landmarks[RIGHT_EYE_LOWER]
+
+        # 왼쪽 눈
+        left_min_x = min(left_inner[0], left_outer[0])
+        left_max_x = max(left_inner[0], left_outer[0])
+        left_eye_width = left_max_x - left_min_x
+        left_ratio = (left_iris[0] - left_min_x) / left_eye_width if left_eye_width > 0 else 0.5
+
+        # 오른쪽 눈
+        right_min_x = min(right_inner[0], right_outer[0])
+        right_max_x = max(right_inner[0], right_outer[0])
+        right_eye_width = right_max_x - right_min_x
+        right_ratio = (right_iris[0] - right_min_x) / right_eye_width if right_eye_width > 0 else 0.5
+
+        # 수평 비율 (중앙값 사용)
+        horiz_ratio = np.median([left_ratio, right_ratio])
+
+        # 수직 비율 계산
+        left_eye_height = abs(left_upper[1] - left_lower[1])
+        left_v_ratio = (left_iris[1] - left_upper[1]) / left_eye_height if left_eye_height > 0 else 0.5
+        right_eye_height = abs(right_upper[1] - right_lower[1])
+        right_v_ratio = (right_iris[1] - right_upper[1]) / right_eye_height if right_eye_height > 0 else 0.5
+        vert_ratio = np.median([left_v_ratio, right_v_ratio])
+
+        print(f"[DEBUG] left_ratio: {left_ratio:.3f}, right_ratio: {right_ratio:.3f}, horiz_ratio: {horiz_ratio:.3f}")
+        print(f"[DEBUG] left_v_ratio: {left_v_ratio:.3f}, right_v_ratio: {right_v_ratio:.3f}, vert_ratio: {vert_ratio:.3f}")
+
+        # 시선 방향 결정
+        if vert_ratio > VERT_DOWN_THRESH:
+            print("[DEBUG] Looking down")
+            return "down"
+        elif horiz_ratio < HORIZ_LEFT_THRESH:
+            print("[DEBUG] Looking left")
+            return "left"
+        elif horiz_ratio > HORIZ_RIGHT_THRESH:
+            print("[DEBUG] Looking right")  
+            return "right"
+        else:
+            print("[DEBUG] Looking center")
+            return "center"
+
+    except Exception as e:
+        print(f"[DEBUG] 계산 오류: {e}")
+        return "center"
+
 
 def analyze_and_save_gaze(bucket: str, prefix: str, db: Session, region: str):
     """
-    MediaPipe를 사용한 gaze 분석 및 DB 저장
+    눈동자 기반 gaze 분석 수행 후
+    - frame별 gaze 테이블에 저장
+    - gaze_results 딕셔너리 반환
+    - gaze_score를 Score 테이블에 저장
     """
-    print(f"[INFO] Starting MediaPipe-based gaze analysis for bucket: {bucket}, prefix: {prefix}")
-    
-    s3_client = boto3.client(
+    print(f"[INFO] Gaze 분석 시작: bucket={bucket}, prefix={prefix}")
+    s3 = boto3.client(
         's3',
         aws_access_key_id=AWS_ACCESS_KEY_ID,
         aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
         region_name=AWS_REGION
     )
-    
-    try:
-        result = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix)
-    except Exception as e:
-        print(f"[ERROR] Error listing S3 objects: {e}")
+    resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+    if 'Contents' not in resp:
+        print("[WARN] 분석할 이미지 없음")
         return {}
 
-    if 'Contents' not in result:
-        print("[WARNING] No images found in S3 for gaze analysis")
-        return {}
 
-    image_keys = sorted([obj['Key'] for obj in result['Contents'] if obj['Key'].lower().endswith(('.jpg', '.png'))])
-    print(f"[INFO] Found {len(image_keys)} images for MediaPipe gaze analysis")
-    
-    # 딕셔너리 변수 초기화
+    image_keys = sorted(
+        obj['Key'] for obj in resp['Contents']
+        if obj['Key'].lower().endswith(('.jpg', '.png'))
+    )
+    print(f"[INFO] 총 {len(image_keys)}개 이미지 처리 예정")
+
+
     gaze_results = {}
     processed_count = 0
-    failed_count = 0
-    face_detected_count = 0
-
-    for img_key in image_keys:
-        print(f"[DEBUG] ========== Processing image: {img_key} ==========")
-        
-        try:
-            # S3에서 이미지 읽기
-            frame_img = read_image_from_s3(bucket, img_key)
-            if frame_img is None:
-                print(f"[WARNING] Failed to read image: {img_key}")
-                failed_count += 1
-                continue
-
-            # MediaPipe로 시선 방향 감지
-            direction = detect_gaze_direction_with_mediapipe(frame_img)
-            
-            if direction != "unknown":
-                face_detected_count += 1
-            
-            print(f"[DEBUG] Detected gaze direction: {direction}")
-
-            # 이미지 URL 생성: DB에 저장된 형식과 동일하게
-            image_url = f"https://{bucket}.s3.{region}.amazonaws.com/{img_key}"
-
-            # Frame 조회
-            frame = db.query(Frame).filter(Frame.image_url == image_url).first()
-            if not frame:
-                print(f"[WARNING] No matching frame found for: {image_url}")
-                failed_count += 1
-                continue
-
-            print(f"[DEBUG] Found frame_id: {frame.id}")
-
-            # DB gaze 테이블에 저장
-            crud.create_gaze_record(db, frame.id, direction)
-            print(f"[INFO] Gaze saved for frame_id: {frame.id}, direction: {direction}")
-            gaze_results[frame.id] = direction
-            processed_count += 1
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to process image {img_key}: {e}")
-            import traceback
-            traceback.print_exc()
-            failed_count += 1
+   
+    for idx, key in enumerate(image_keys):
+        print(f"[DEBUG] 처리 중 ({idx+1}/{len(image_keys)}): {key}")
+       
+        img = read_image_from_s3(bucket, key)
+        if img is None:
             continue
 
-    print(f"[INFO] ========== MediaPipe Gaze Analysis Summary ==========")
-    print(f"[INFO] Total images: {len(image_keys)}")
-    print(f"[INFO] Successfully processed: {processed_count}")
-    print(f"[INFO] Failed: {failed_count}")
-    print(f"[INFO] Face detected in: {face_detected_count} images")
-    print(f"[INFO] Face detection rate: {(face_detected_count/len(image_keys)*100):.1f}%")
-    print(f"[INFO] Processing success rate: {(processed_count/len(image_keys)*100):.1f}%")
-    
-    # 딕셔너리 변수
+
+        direction = detect_gaze_direction_with_mediapipe(img)
+        print(f"[DEBUG] 감지된 방향: {direction}")
+       
+        image_url = f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
+        frame = db.query(Frame).filter(Frame.image_url == image_url).first()
+        if not frame:
+            print(f"[WARN] 프레임을 찾을 수 없음: {image_url}")
+            continue
+
+
+        crud.create_gaze_record(db, frame.id, direction)
+        gaze_results[frame.id] = direction
+        processed_count += 1
+
+
+    print(f"[INFO] 처리 완료: {processed_count}개 프레임")
+
+
+    # gaze_score 계산
+    stats = {}
+    for d in gaze_results.values():
+        stats[d] = stats.get(d, 0) + 1
+   
+    print(f"[INFO] 방향별 분포: {stats}")
+   
+    total = sum(stats.values())
+    center_ct = stats.get("center", 0)
+    gaze_score = (center_ct / total) * 100 if total > 0 else 0
+    print(f"[INFO] Gaze score (center 비율 %): {gaze_score:.2f}")
+
+
+    # DB에 gaze_score 저장
+    try:
+        video_id = int(prefix.split("/")[1])
+        crud.upsert_score(db, video_id, gaze_score=gaze_score)
+        print(f"[INFO] gaze_score 저장 완료: video_id={video_id}, score={gaze_score:.2f}")
+    except Exception as e:
+        print(f"[WARN] gaze_score 저장 실패: {e}")
+
+
+    gaze_results["gaze_score"] = gaze_score
     return gaze_results

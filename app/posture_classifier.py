@@ -1,10 +1,11 @@
-# app/posture_classifier.py
+# === app/posture_classifier.py (전체 교체본) ===
 import os
 import re
 import io
 import hashlib
 import logging
 from typing import Optional, List
+from sqlalchemy import or_
 
 import boto3
 import numpy as np
@@ -153,21 +154,61 @@ def classify_poses_and_save_to_db(
     good_cnt = bad_cnt = total = 0
 
     for key in keys:
-        frame_url = _poses_key_to_frame_url(bucket, region, key, video_id)
-        if not frame_url:
+        # --- ms 추출 ---
+        base = os.path.basename(key)
+        m = re.search(r"pose_(\d+)\.(?:jpg|jpeg|png)$", base, re.IGNORECASE)
+        if not m:
             logger.warning(f"Skip (cannot parse ms): {key}")
             continue
+        ms = int(m.group(1))
+        mapped_key = f"frames/{video_id}/frame_{ms}.jpg"
+        frame_url = _poses_key_to_frame_url(bucket, region, key, video_id)
 
+        # --- Frame 매칭: 1) 완전일치 ---
         frame = db.query(Frame).filter(Frame.image_url == frame_url).first()
-        if not frame:
-            logger.warning(f"No matching frame for pose img: {key} -> {frame_url}")
-            continue
 
+        # --- 2) 접미사 like (CloudFront/서명URL/path-style 커버) ---
+        if not frame:
+            frame = (
+                db.query(Frame)
+                  .filter(Frame.video_id == video_id)
+                  .filter(
+                      or_(
+                          Frame.image_url.like(f"%/{mapped_key}"),
+                          Frame.image_url.like(f"%{mapped_key}?%")
+                      )
+                  )
+                  .first()
+            )
+
+        # --- 3) 타임스탬프 근사(±30ms) ---
+        if not frame:
+            ts = ms / 1000.0
+            tol = 0.03
+            frame = (
+                db.query(Frame)
+                  .filter(Frame.video_id == video_id)
+                  .filter(Frame.frame_timestamp.between(ts - tol, ts + tol))
+                  .first()
+            )
+
+        # --- 4) 그래도 없으면 생성 ---
+        if not frame:
+            logger.warning(f"No matching frame, creating one: {mapped_key}")
+            ts = ms / 1000.0
+            frame = Frame(
+                video_id=video_id,
+                frame_timestamp=ts,
+                image_url=f"https://{bucket}.s3.{region}.amazonaws.com/{mapped_key}",
+            )
+            db.add(frame)
+            db.flush()  # frame.id 확보
+
+        # --- 이미지 로드 & 예측 ---
         arr = _load_img_from_s3(s3, bucket, key)
         if arr is None:
             continue
 
-        # ===== 입력 강제 단일화 로직 =====
         if isinstance(arr, (list, tuple)):
             logger.warning(f"Multiple inputs detected for {key}, taking the first one only.")
             arr = arr[0]
@@ -175,11 +216,9 @@ def classify_poses_and_save_to_db(
         if arr.ndim != 4 or arr.shape[1:] != (128, 128, 3):
             logger.error(f"Unexpected shape for {key}: {arr.shape}, skipping.")
             continue
-        # ===== 끝 =====
 
         try:
             pred = model.predict(arr, verbose=0)
-            logger.debug(f"Pred shape for {key}: {getattr(pred, 'shape', None)}")
             prob = float(pred[0][0])
         except Exception as e:
             logger.error(f"Predict failed for key={key}: {e}")
@@ -215,3 +254,4 @@ def classify_poses_and_save_to_db(
     }
     logger.info(f"Posture classification done: {result}")
     return result
+
