@@ -11,13 +11,25 @@ from sqlalchemy import func
 import shutil, uuid
 from moviepy.editor import VideoFileClip
 
+# CORS
+from fastapi.middleware.cors import CORSMiddleware
+
+# JWT
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import jwt, JWTError
+
+from datetime import datetime, timezone
+from typing import Optional
+import json
+
+from app import config
 from app.db import SessionLocal, engine, Base
 from app import crud, s3_utils, video_processing
-from app.config import JWT_SECRET  # 사용 안 해도 유지
+from app.config import JWT_SECRET
 
 # 추가 import
-from app.speech_pronunciation import run_pronunciation_score  # (audio_id, wav_path, script_path)
-from app.voice_hz import save_pitch_to_db                     # (audio_id, wav_path)
+from app.speech_pronunciation import run_pronunciation_score
+from app.voice_hz import save_pitch_to_db
 from app.models import (
     Audio, Emotion, Frame, Pose, Pronunciation, Pitch, Score, Feedback, Speed, Video
 )
@@ -33,6 +45,59 @@ from app.config import (
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI()
+
+# --- CORS 설정 ---
+origins = [
+    "http://localhost:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Auth ---
+security = HTTPBearer()
+
+async def get_current_user_id(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> int:
+    """
+    JWT 토큰에서 userId(id, sub 대체) 추출 + exp 만료 검증.
+    - 서명키/알고리즘은 .env의 JWT_SECRET / (기본 HS256) 사용.
+    """
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(
+            token,
+            config.JWT_SECRET,
+            algorithms=[config.ALGORITHM],
+        )
+
+        # 디버그용 payload 확인
+        print("--- DECODED JWT PAYLOAD ---")
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        print("---------------------------")
+
+        user_id = payload.get("userId") or payload.get("id") or payload.get("sub")
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid token: user_id not found")
+
+        exp = payload.get("exp")
+        if exp is None or datetime.fromtimestamp(exp, tz=timezone.utc) < datetime.now(tz=timezone.utc):
+            raise HTTPException(status_code=401, detail="Token has expired or invalid")
+
+        # 이메일(sub)로 들어오면 int 변환에서 실패함 → 발급 로직에서 userId(정수 PK) 넣도록 권장
+        return int(user_id)
+    except ValueError:
+        # user_id가 정수가 아닌 경우(예: 이메일). 여기서 이메일→정수 PK 매핑 로직을 추가하든지, 토큰 발급을 수정.
+        raise HTTPException(status_code=401, detail="Invalid token: user_id is not numeric")
+    except JWTError as exc:
+        print(f"!!! JWT DECODE ERROR: {exc}")
+        raise HTTPException(status_code=401, detail="Invalid token") from exc
 
 
 # --- 공용 유틸 ---
@@ -262,12 +327,11 @@ async def upload_video(
     file: UploadFile = File(...),
     script: UploadFile = File(...),
     title: str = Form(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id)
 ):
-    user_id = 1
-
     os.makedirs("temp", exist_ok=True)
-
+    print(user_id)
     # 1) 비디오 파일 저장 (로컬)
     temp_file_name = f"{uuid.uuid4()}_{file.filename}"
     temp_file_path = os.path.join("temp", temp_file_name)
@@ -327,14 +391,16 @@ async def upload_video(
 
 
 # --- 비디오 분석 결과 조회 엔드포인트 ---
-from fastapi import HTTPException
-
 @app.get("/videos/{video_id}/analysis")
-def get_video_analysis(video_id: int, db: Session = Depends(get_db)):
+def get_video_analysis(video_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     # === 기본 정보 ===
     video_obj = db.query(Video).filter(Video.id == video_id).first()
     if not video_obj:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    # --- Authorization Check ---
+    if video_obj.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this video")
 
     score_obj = db.query(Score).filter(Score.video_id == video_id).first()
     if not score_obj:
@@ -491,4 +557,23 @@ def get_video_analysis(video_id: int, db: Session = Depends(get_db)):
         "audios": audio_data,
         "poses": pose_data,
        
+    }
+# === 내 비디오 ID 추출 ===
+@app.get("/videos/my/ids")
+def list_my_video_ids(
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """
+    현재 사용자(user_id)가 가진 video_id만 리스트로 반환.
+    """
+    rows = (
+        db.query(Video.id)
+          .filter(Video.user_id == user_id)
+          .order_by(Video.upload_time.desc())
+          .all()
+    )
+    return {
+        "user_id": user_id,
+        "video_ids": [r.id for r in rows],
     }
