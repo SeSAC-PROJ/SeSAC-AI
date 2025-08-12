@@ -5,20 +5,50 @@ from typing import Dict, Any, List, Tuple
 from dotenv import load_dotenv
 import openai
 
-# env에서 OpenAI API 키 로드
+# =============== 환경 설정 ===============
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 if not openai.api_key:
     raise ValueError("OPENAI_API_KEY가 설정되지 않았습니다.")
 
 
+# =============== 유틸: 시선 비율 계산 ===============
+def compute_gaze_stats(gaze: Dict[Any, Any]) -> Dict[str, Any]:
+    """
+    gaze 딕셔너리(프레임->라벨)에서 비율(%)을 계산해서 반환.
+    반환 예시:
+      {
+        "center_ratio": 87.9, "down_ratio": 8.6,
+        "left_ratio": 2.1, "right_ratio": 1.4, "unknown_ratio": 0.0,
+        "side_ratio": 3.5, "total": 123
+      }
+    """
+    from collections import Counter
+    labels = [v for v in gaze.values() if isinstance(v, str)]
+    c = Counter(labels)
+    total = sum(c.values()) or 1
+    getp = lambda k: round(c.get(k, 0) * 100.0 / total, 1)
+    left = getp("left")
+    right = getp("right")
+    return {
+        "center_ratio": getp("center"),
+        "down_ratio": getp("down"),
+        "left_ratio": left,
+        "right_ratio": right,
+        "unknown_ratio": getp("unknown"),
+        "side_ratio": round(left + right, 1),
+        "total": total,
+    }
+
+
+# =============== 유틸: 시간 문자열 교정 ===============
 def _parse_intervals(text: str) -> List[Tuple[float, float, Tuple[int, int]]]:
     """
     텍스트에서 시간 구간을 찾는다.
-    허용 패턴:
-      1) a~b초
-      2) a b초  (중간 ~ 빠짐)
-      3) a,b초  (콤마 연결)
+      허용 패턴:
+        1) a~b초
+        2) a b초  (중간 ~ 빠짐)
+        3) a,b초  (콤마 연결)
     반환: (start, end, (span_start, span_end))
     """
     intervals: List[Tuple[float, float, Tuple[int, int]]] = []
@@ -99,18 +129,66 @@ def fix_decimals(text: str) -> str:
     return re.sub(r'(\d+\.\d{2,})', lambda m: f"{float(m.group(1)):.1f}", text)
 
 
+def _strip_gaze_times(detail: str) -> str:
+    """
+    시선 라인에서 실수로 들어간 시간 구간(a ~ b초)을 제거해 비율만 남기기.
+    """
+    if not detail:
+        return detail
+    lines = detail.splitlines()
+    out = []
+    for ln in lines:
+        if ln.startswith("- **[시선]**"):
+            ln = re.sub(r'\d+(?:\.\d+)?\s*~\s*\d+(?:\.\d+)?\s*초', '', ln)
+            ln = re.sub(r'\s{2,}', ' ', ln).strip()
+        out.append(ln)
+    return "\n".join(out)
+
+
+# =============== 코치 봇 ===============
 class PresentationFeedbackBot:
-    def __init__(self, model: str = "gpt-4.1"):
+    def __init__(self, model: str = "gpt-4.1", fps: int = 30):
         self.model = model
+        self.fps = fps  # 프레임→초 변환 지시를 위해 프롬프트에 명시
 
     def build_prompt(self, analysis: Dict[str, Any]) -> str:
-        analysis_str = json.dumps(analysis, ensure_ascii=False)
+        """
+        프롬프트 핵심:
+        - 시선: '시간' 금지, '비율(%)'만 사용 (center/down/side/unknown)
+        - 숫자 포맷: 소수 1자리, '약 ~' 금지, 취소선 금지
+        - 발음: score=점수(점), matching_rate=퍼센트(%)
+        - 속도: 전체 wpm + 구간별 speed_rows 초 사용
+        - 표정: ref와 비교, 임계값 로직 + 실행 팁
+        - 행동 문장: '처음에는, 다음에는, 마지막에는' 형식
+        """
+        # 파생: 시선 비율 계산
+        gaze = analysis.get("gaze", {}) if isinstance(analysis.get("gaze"), dict) else {}
+        gaze_stats = compute_gaze_stats(gaze)
+
+        # 메타
+        meta = {
+            "notes": {
+                "fps": self.fps,
+                "gaze_time_unit": "frames",
+                "convert_rule": "시선 섹션에서는 시간을 쓰지 말 것(비율만). 다른 섹션에서 초 표기는 a ~ b초 형식."
+            }
+        }
+
+        payload = {"analysis": analysis, "_derived": {"gaze_stats": gaze_stats}, "_meta": meta}
+        analysis_str = json.dumps(payload, ensure_ascii=False)
+
         return (
             "## 역할\n"
             "- 당신은 한국어로 피드백하는 **숙련된 발표 코치**입니다. 사용자는 응답하지 않습니다.\n\n"
 
-            "## 입력(분석 결과)\n"
+            "## 입력(분석 결과 + 파생값 + 메타)\n"
             f"{analysis_str}\n\n"
+
+            "## 시선 작성 규칙(중요: 시간 금지)\n"
+            "- **[시선] 섹션에서는 시간 구간(초)을 절대 쓰지 말고, 오직 비율(%)만 사용**.\n"
+            "- 사용할 값: _derived.gaze_stats.center_ratio, down_ratio, left_ratio, right_ratio, side_ratio, unknown_ratio.\n"
+            "- 템플릿 예: \"- **[시선]** 전체: center {center_ratio}%, down {down_ratio}%, side {side_ratio}% — ...\"\n"
+            "- 행동 제안: '처음에는, 다음에는, 마지막에는' 2~3문장.\n\n"
 
             "## 지표 의미(반드시 반영)\n"
             "- **pitch_score**: 말의 **높낮이(억양) 다양성** 점수 (0~100)\n"
@@ -120,67 +198,54 @@ class PresentationFeedbackBot:
             "- **pronunciation_score**: **발음 점수**(0~100)\n"
             "- **matching_rate**: **발음 일치율**(%) — 점수가 아님!\n\n"
 
-            "## 수치 사용 규칙(중요)\n"
+            "## 수치/시간 사용 규칙\n"
             "- 발음: `voice.pronunciation.score`는 **점수(점)**, "
-            "`voice.pronunciation.matching_rate`는 **백분율(%)**.\n"
+            "`voice.pronunciation.matching_rate`는 **백분율(%)**. 혼용 금지.\n"
             "- 속도: `voice.speed.overall_wpm` 실제 수치, 목표 범위는 `voice.speed.wpm_range` 그대로 인용.\n"
             "- 구간 코칭: `voice.speed.speed_rows`의 시작~끝(초)을 그대로 사용.\n"
-            "- **모든 시간 구간은 반드시 `a~b초` 형식**으로 표기(예: `9.2~13.4초`). 쉼표/공백 연결 금지.\n"
-            "- 소수 한 자리까지 반올림. **추정/창작 금지**.\n"
-            "- **마크다운 취소선(`~~`) 절대 사용 금지.**\n\n"
+            "- **시간 표기**(시선 제외): 반드시 `a ~ b초` 형식(공백 포함)만 사용.\n"
+            "- 모든 수치는 **소수 1자리**. **“약 ~%/점” 금지**, **취소선(~~) 금지**.\n"
+            "- 입력에 없는 수치 **추정·창작 금지**. 없으면 “데이터 없음”.\n\n"
 
-            "## 목표\n"
-            "- 시선/자세/표정/발음/속도/피치에 대해 **구체적 칭찬 + 실행 가능한 개선 제안**.\n"
-            "- **시간 구간(초 단위)**을 꼭 명시.\n\n"
-
-            "## 조건부 규칙(점수 기반 코칭)\n"
             "## 감정(표정) 피드백 규칙\n"
-            "- 아래 값이 모두 주어졌다고 가정하고 사용: emotion.all_avg.neutral, emotion.all_avg.happy, "
-            "  emotion.ref.neutral=0.6902, emotion.ref.happy=0.2102\n"
-            "- 수치는 반드시 백분율(%)로 **소수 1자리**까지 표기. 예: 중립 89.7%, 행복 6.9%\n"
-            "- 비교 표현 **반드시 포함**: \"(기준: 중립 69.0%, 행복 21.0%)\"\n"
-            "\n"
-            "### 분류 로직(하나 이상 해당 가능)\n"
-            "1) **밋밋함(표정 다양성 부족)**: neutral ≥ ref.neutral + 0.15 **또는** happy ≤ ref.happy − 0.10\n"
-            "   - 코칭: \"국면 전환마다 **미소/끄덕임/눈썹 리드** 중 2개를 넣자\" + \"핵심 문장 시작 1초 전에 **미소 예열**\"\n"
-            "2) **과도한 밝음**: happy ≥ ref.happy + 0.15 **그리고** neutral ≤ ref.neutral − 0.10\n"
-            "   - 코칭: \"**강조 구간만** 밝게, 정보 구간은 **중립 표정** 유지\" + \"웃음 길이 **2초 이내** 제한\"\n"
-            "3) **무거움/침울**: sad + angry ≥ 0.20 **또는** neutral ≥ 0.85 **and** happy ≤ 0.05\n"
-            "   - 코칭: \"문장 첫 단어에서 **입꼬리 상승 5%**\" + \"마무리 문장에 **미소 스냅**\"\n"
-            "4) **기복 큼(롤러코스터)**: 구간별 happy 변동이 크면 "
-            "\"**정보–강조–요약** 3구간에서 표정 레벨을 1→2→1로 **계단식** 유지\"\n"
-            "\n"
-            "### 출력 문장 템플릿(반드시 포함)\n"
-            "- \"표정 분포: 중립 {neutral*100:.1f}%, 행복 {happy*100:.1f}% (기준: 중립 69.0%, 행복 21.0%)\"\n"
-            "- 상태 문장: 위 분류 로직 중 해당하는 진단 1~2개 **간단 선고형** 요약\n"
-            "- 행동 지시: 위 코칭에서 **행동 동사**로 시작하는 2~3개 팁(숫자·횟수 포함)\n"
-            "\n"
-            "- `gaze`가 `unknown`이면: **촬영 구도/조명 수정** + **깜빡임 루틴** 제안.\n"
-            "- `pitch.score` 또는 `voice.pitch.score` < 60: '국어책처럼 단조롭게 읽지 말기'를 명시하고 "
-            "키워드 억양, 상승→하강, 문장 끝 톤 다운, 1–3–1 강세, glide 연습 등 3가지 이상 제시.\n"
-            "- `speed.score` < 60: wpm 목표범위(`wpm_range`) 제시, 3-3-3 호흡, 쉼표·마침표 멈춤, "
-            "문장 말미 템포 업 등을 구간별로 제안.\n"
-            "- `pose_score` ≥ 85: 안정적 자세 칭찬. 낮으면 바른 자세/시선 고정 제안.\n"
-            "- `pronunciation_score` ≥ 85: 발음 명확성 칭찬.\n"
-            "- `pronunciation_score` < 85 && `matching_rate` 높음: 유사 발음 주의 훈련.\n"
-            "- `pronunciation_score` < 85 && `matching_rate` 낮음: 명확성·정확성 모두 개선 팁.\n"
-            "- 데이터 누락/애매: 추정 금지 + 일반 가이드.\n\n"
+            "- 사용 값: emotion.all_avg.neutral/happy/sad/angry, emotion.ref.neutral=0.6902, emotion.ref.happy=0.2102\n"
+            "- 표기: **백분율(%) 소수 1자리**, 비교 문구 포함: \"(기준: 중립 69.0%, 행복 21.0%)\"\n"
+            "  1) **밋밋함**: neutral ≥ ref.neutral + 0.15 또는 happy ≤ ref.happy − 0.10 → "
+            "     '미소/끄덕임/눈썹 리드' 2개 + '핵심 문장 1초 전 미소 예열'\n"
+            "  2) **과도한 밝음**: happy ≥ ref.happy + 0.15 & neutral ≤ ref.neutral − 0.10 → "
+            "     강조 구간만 밝게/웃음 2초 이내\n"
+            "  3) **무거움/침울**: (sad+angry) ≥ 0.20 또는 (neutral ≥ 0.85 & happy ≤ 0.05) → "
+            "     첫 단어 입꼬리 5% 상승 + 마무리 미소 스냅\n"
+            "  4) **기복 큼**: happy 변동이 크면 → 정보–강조–요약을 1→2→1로 계단식 유지\n\n"
 
-            "## 길이/형식 가이드\n"
-            "- short_feedback: 60~80자 한줄요약(마크다운 금지).\n"
-            "- detailed_feedback: 각 줄은 `- **[카테고리]**` 시작 + **시간 구간** + **관찰 근거(수치)** + **행동 지시**. "
-            "최소 1500자 이상 권장.\n"
-            "- 중복 내용은 합치되, **시간대 차이**는 분리. 반말, 부드러운 코치 톤.\n\n"
+            "## 조건부 규칙(점수 기반)\n"
+            "- gaze가 unknown이면: 촬영 구도/조명 수정 + 깜빡임 루틴.\n"
+            "- voice.pitch.score < 60: '국어책처럼 단조롭게 읽지 말기' 포함 + "
+            "키워드 억양, 상승→하강, 문장 끝 톤 다운, 1–3–1 강세, glide 연습 중 3개 이상.\n"
+            "- 속도: overall_wpm < wpm_range 하한 또는 speed.bad_ratio ≥ 0.4 → "
+            "3-3-3 호흡, 쉼표·마침표 멈춤, 문장 말미 템포 업; speed_rows로 구간 코칭.\n"
+            "- 자세: posture.pose_score ≥ 85 → 안정적 자세 칭찬; 미만이면 바른 자세/시선 고정/양발 균형.\n"
+            "- 발음: pronunciation.score ≥ 85 → 발음 명확성 칭찬. "
+            "score < 85 & matching_rate ≥ 85% → 유사 발음 주의. "
+            "score < 85 & matching_rate < 85% → 명확성·정확성 모두 개선.\n\n"
 
-            "## 출력(JSON만; 키는 아래 정확히 사용)\n"
+            "## 행동 제안 문장 스타일\n"
+            "- 목록은 **'처음에는, 다음에는, 마지막에는'** 사용. '1) 2) 3)' 금지. 문장은 **동사로 시작**.\n"
+            "- 카테고리 내 스타일 일관 유지.\n\n"
+
+            "## 길이·형식\n"
+            "- **short_feedback**: 100~150자, 한 줄(마크다운 금지).\n"
+            "- **detailed_feedback**: 각 줄 `- **[카테고리]**` 시작 + **시간/비율** + **관찰 수치** + **행동 지시**, 900~1500자 권장.\n\n"
+
+            "## 출력(JSON만; 키 이름 정확히 사용)\n"
             "{\n"
-            '  "short_feedback": "<60 ~ 80자 핵심 요약>",\n'
-            '  "detailed_feedback": "- **[시선]** 0~10초: ... (시선 점수 87.9)\\n- **[발음]** 20~35초: ... (발음 점수 76.5, 일치율 90.8%)\\n- **[속도]** 5~15초: ... (93.0 wpm / 목표 100.0~150.0) ..."\n'
+            '  "short_feedback": "<100~150자 한 줄 요약>",\n'
+            '  "detailed_feedback": "- **[시선]** 전체: center {center_ratio}%, down {down_ratio}%, side {side_ratio}% — ...\\n- **[속도]** 5.0 ~ 15.0초: ... (93.0 wpm / 목표 100.0 ~ 150.0) ..."\n'
             "}\n\n"
 
             "## 금지 사항\n"
-            "- JSON 바깥 텍스트/코드블록/인사 금지. 존재하지 않는 수치/사실 금지. "
-            "수치는 반드시 입력에서만 가져와 한 자리 소수로 표기. **취소선(~~) 금지.**\n"
+            "- JSON 바깥 텍스트/코드블록/인사 금지. '약 ~%/점' 금지. 취소선(~~) 금지. "
+            "입력에 없는 수치/사실 창작 금지.\n"
         )
 
     def get_feedback(self, analysis: Dict[str, Any]) -> Dict[str, str]:
@@ -191,8 +256,9 @@ class PresentationFeedbackBot:
                 {"role": "system", "content": "당신은 경험 많은 발표 코치입니다. 사용자는 응답할 수 없습니다."},
                 {"role": "user", "content": prompt},
             ],
-            max_completion_tokens=2000,
-            response_format={"type": "json_object"},
+            max_completion_tokens=1600,
+            response_format={"type": "json_object"},  # JSON 모드
+            # temperature=1  # gpt-4.1 기본 1
         )
         content = response.choices[0].message.content.strip()
 
@@ -223,9 +289,10 @@ class PresentationFeedbackBot:
             or ""
         ).strip()
 
-        # 🔧 후처리: 취소선/시간구간 정규화 + 소수 자리 통일
+        # 🔧 후처리: 시간 표기/소수 자리 통일 + 시선라인 시간 강제 제거
         short = fix_decimals(normalize_time_ranges(short))
         detail = fix_decimals(normalize_time_ranges(detail))
+        detail = _strip_gaze_times(detail)
 
         if not short or not detail:
             print("[DEBUG] keys from model:", list(data.keys()))
@@ -237,7 +304,7 @@ class PresentationFeedbackBot:
         return {"short_feedback": short, "detailed_feedback": detail}
 
 
-# video_processing 흐름 내 피드백 호출 예시
+# =============== 파이프라인 진입점 ===============
 def process_and_feedback(analysis_results: Dict[str, Any]) -> Dict[str, Any]:
     bot = PresentationFeedbackBot()
     fb = bot.get_feedback(analysis_results)
@@ -247,26 +314,35 @@ def process_and_feedback(analysis_results: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-# 예시 사용
+# =============== 예시 실행 ===============
 if __name__ == "__main__":
+    # 시선 dict에 프레임->라벨 혼재 가능. 우리는 비율만 쓰므로 안전.
     analysis_results = {
-        "gaze": {45: "center", 46: "center"},
-        "emotion": {"all_avg": {"neutral": 1.0, "happy": 0.0}},
+        "gaze": {45: "center", 46: "center", 47: "down", 48: "center", "gaze_score": 88.0},
+        "emotion": {
+            "all_avg": {"neutral": 0.90, "happy": 0.05, "sad": 0.03, "angry": 0.02},
+            "ref": {"neutral": 0.6902, "happy": 0.2102},
+            "score": 65.2
+        },
         "voice": {
-            "pronunciation": {"score": 90.0, "matching_rate": 95.3},
-            "pitch": {"score": 95.0},
+            "pronunciation": {"score": 76.5, "matching_rate": 90.8},
+            "pitch": {"score": 39.8},
             "speed": {
-                "overall_wpm": 120.0,
+                "overall_wpm": 93.0,
                 "wpm_range": [100.0, 150.0],
+                "bad_ratio": 0.5,
                 "speed_rows": [
-                    {"stn_start": 7.5, "stn_end": 8.7, "wpm": 96.8},
-                    {"stn_start": 23.4, "stn_end": 29.5, "wpm": 89.1},
+                    {"stn_start": 5.9, "stn_end": 10.4, "wpm": 92.5, "wpm_band": "bad"},
+                    {"stn_start": 17.9, "stn_end": 25.3, "wpm": 90.2, "wpm_band": "bad"},
+                    {"stn_start": 25.9, "stn_end": 34.8, "wpm": 95.0, "wpm_band": "bad"},
+                    {"stn_start": 51.4, "stn_end": 56.1, "wpm": 89.4, "wpm_band": "bad"},
                 ],
             },
         },
-        "posture": {"pose_score": 86.0},
-        "gaze_score": 100.0,
+        "posture": {"pose_score": 100.0},
+        "gaze_score": 87.9,
     }
+
     result = process_and_feedback(analysis_results)
     print("Short feedback:", result["short_feedback"])
     print("Detailed feedback:", result["detailed_feedback"])
