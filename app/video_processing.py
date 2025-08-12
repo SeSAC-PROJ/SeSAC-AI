@@ -156,7 +156,7 @@ def extract_frames_and_audio(
         s3_audio_key = f"audios/{video_id}/audio.wav"
         s3_audio_url = s3_utils.upload_file_to_s3(wav_local_path, s3_audio_key)
         crud.create_audio(db, video_id, s3_audio_url, duration)
-        crud.update_video_audio_url(db, video_id, s3_audio_url)
+      
 
         print(f"[INFO] Video processing completed for video_id: {video_id}")
         return wav_local_path

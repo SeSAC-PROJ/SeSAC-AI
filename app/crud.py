@@ -19,12 +19,12 @@ def create_video(db, user_id, title, video_totaltime, video_url):
     db.refresh(db_video)
     return db_video
 
-def update_video_audio_url(db: Session, video_id: int, video_url: str):
-    video = db.query(Video).filter(Video.id == video_id).one_or_none()
-    if video:
-        video.video_url = video_url
+def update_audio_url(db: Session, audio_id: int, audio_url: str):
+    audio = db.query(Audio).filter(Audio.id == audio_id).first()
+    if audio:
+        audio.audio_url = audio_url
         db.commit()
-
+        
 def create_frame(db: Session, video_id: int, frame_timestamp: float, image_url: str):
     db_frame = Frame(video_id=video_id, frame_timestamp=frame_timestamp, image_url=image_url)
     db.add(db_frame)

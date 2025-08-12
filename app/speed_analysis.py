@@ -16,7 +16,7 @@ from app.models import Knn  # mean_wpm 컬럼을 갖는 테이블(벤치마크 W
 # -------------------------------
 WPM_GOOD_MIN = 100.0
 WPM_GOOD_MAX = 150.0
-MAX_PENALTY_RATIO = 0.40   # bad 비율 100%일 때 KNN 점수의 최대 40% 감점 
+MAX_PENALTY_RATIO = 0.30   # bad 비율 100%일 때 KNN 점수의 최대 30% 감점 
 K_FOR_KNN = 3
 ALPHA_FOR_SCALE = 0.05     # KNN 거리 스케일 민감도
 
