@@ -1,6 +1,6 @@
 <div align="center">
   
-  ![header](https://capsule-render.vercel.app/api?type=waving&color=0:d5ccff,100:f4ffad&height=240&text=SeSAC-Hackathon%202팀%20'AIFL'의%20AI%20Repository&animation=fadeIn&fontColor=6a5858&fontSize=35&fontAlignY=40&desc=%20SeSAC%20Hackathon%20Team%20&descAlignY=60)
+  ![header](https://capsule-render.vercel.app/api?type=waving&color=0:d5ccff,100:f4ffad&height=240&text=SeSAC-Hackathon%20팀%20'AIFL'의%20AI%20Repository&animation=fadeIn&fontColor=6a5858&fontSize=35&fontAlignY=40&desc=%20SeSAC%20Hackathon%20Team%20&descAlignY=60)
 
 </div>
 
