@@ -1,6 +1,6 @@
 <div align="center">
   
-  ![header](https://capsule-render.vercel.app/api?type=waving&color=0:d5ccff,100:f4ffad&height=240&text=KSEB-AI%202팀%20'도와조'의%20AI%20Repository&animation=fadeIn&fontColor=6a5858&fontSize=35&fontAlignY=40&desc=경기대학교%20SW%20Bootcamp%204기%20AI%20도메인%20Team%202&descAlignY=60)
+  ![header](https://capsule-render.vercel.app/api?type=waving&color=0:d5ccff,100:f4ffad&height=240&text=2025-SeSAC-Hackathon%202팀%20'AIFL(에이플)'의%20AI%20Repository&animation=fadeIn&fontColor=6a5858&fontSize=35&fontAlignY=40&desc=%20SeSAC%20Hackathon%%20Team%202&descAlignY=60)
 
 </div>
 
@@ -8,7 +8,7 @@
 
 ## 🧑‍💻 About Us  
 > **안녕하세요!**  
-저희는 경기대학교 **SW Bootcamp 4기 AI 도메인 2팀 '도와조'** 입니다.  
+저희는 **2025 SeSAC Hackathon 'AIFL(에이플)팀'** 입니다.  
 **AI 기술**을 활용해 **실제 문제를 해결하는 실용적인 프로젝트**를 만들고자 합니다. 🚀  
 
 ---
@@ -28,7 +28,7 @@
 
 ## 📂 About Our Project  
 
-> KSEB-AI Repository는 **KSEB 4기 2팀의 AI Algorithm & Backend 코드**를 담고 있습니다.  
+> SeSAC-AI Repository는 **AIFL(에이플)팀의 AI Algorithm & Backend 코드**를 담고 있습니다.  
 > 다양한 실험과 모델 개발, 그리고 API까지 **AI 개발의 모든 여정을 기록**합니다.
 
 📌 주요 기능:
@@ -45,7 +45,7 @@
 
 ---
 
-## 🤝 Team '도와조'
+## 🤝 Team 'AIFL'
 
 | Name | Role |
 |------|------|
@@ -53,7 +53,6 @@
 | 🧑‍🎓 황태연 | Backend Dev & AI Dev |
 | 🧑‍🎓 이찬 | Backend Dev & AI Dev |
 | 🧑‍🎓 김세현 | Front Dev |
-| 🧑‍🎓 고윤서 | AI Dev |
 
 ---
 
